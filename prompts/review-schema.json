@@ -22,10 +22,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["check", "severity", "path", "line", "problem", "failure_scenario", "fix"],
+        "required": ["check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"],
         "properties": {
           "check": {"type": "string", "enum": ["scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"]},
           "severity": {"type": "string", "enum": ["blocker", "should-fix", "nit"]},
+          "category": {"type": "string", "enum": ["wrong-behavior", "security", "weakened-gate", "unmet-acceptance", "none"]},
           "path": {"type": "string"},
           "line": {"type": "integer"},
           "problem": {"type": "string"},

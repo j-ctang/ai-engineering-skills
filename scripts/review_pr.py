@@ -47,7 +47,9 @@ MEDIUM_LINES, MEDIUM_FILES = 300, 10
 MAX_NITS = 3
 CHECKS = {"scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"}
 SEVERITIES = ["blocker", "should-fix", "nit"]
-FIELDS = {"check", "severity", "path", "line", "problem", "failure_scenario", "fix"}
+# A blocker must name one of these reasons, or the script downgrades it.
+CATEGORIES = {"wrong-behavior", "security", "weakened-gate", "unmet-acceptance", "none"}
+FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 
 TIER_INSTRUCTIONS = {
     "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
@@ -105,7 +107,8 @@ def validate(review):
         raise ValueError("check status must be pass, fail, or n/a")
     for f in review["findings"]:
         if (set(f) != FIELDS or f["check"] not in CHECKS
-                or f["severity"] not in SEVERITIES or not isinstance(f["line"], int)):
+                or f["severity"] not in SEVERITIES or f["category"] not in CATEGORIES
+                or not isinstance(f["line"], int)):
             raise ValueError(f"finding does not match the schema: {f}")
     blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
     for check, status in review["checks"].items():
@@ -118,6 +121,23 @@ def validate(review):
             kept.append(f)
     review["findings"] = kept
     return review
+
+
+def downgrade(review):
+    """Turn blockers with no blocking reason into should-fix. Return the count.
+
+    A check stays failed only while it still has a blocker.
+    """
+    count = 0
+    for f in review["findings"]:
+        if f["severity"] == "blocker" and f["category"] == "none":
+            f["severity"] = "should-fix"
+            count += 1
+    blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
+    for check, status in review["checks"].items():
+        if status == "fail" and check not in blocked:
+            review["checks"][check] = "pass"
+    return count
 
 
 def render(verdict, tier, escalations, review):
@@ -252,6 +272,7 @@ def main():
     started = time.time()
     review = validate(run_reviewer(args.reviewer, args.checkout, prompt, out))
     run["seconds"] = round(time.time() - started)
+    run["downgraded"] = downgrade(review)
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
     verdict = "Changes needed" if blockers else "Ready to merge"
     comment = render(verdict, tier, escalations, review)
