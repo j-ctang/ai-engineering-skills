@@ -306,17 +306,17 @@ def main():
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 
-    tier, lines, files, escalations = classify(*diff_stats(args.checkout, base, head))
-
-    run = {
-        "reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head,
-        "prompt_version": sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
-        "tier": tier, "lines": lines, "files": files, "escalations": escalations,
-    }
-    if args.dry_run:
-        print(json.dumps(run, indent=2))
-        run["status"] = "dry-run"
+    # From here on the run directory exists, so every exit leaves a run.json.
+    run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head}
     with recorded(out, run):
+        tier, lines, files, escalations = classify(*diff_stats(args.checkout, base, head))
+        run.update(
+            prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
+            tier=tier, lines=lines, files=files, escalations=escalations,
+        )
+        if args.dry_run:
+            print(json.dumps(run, indent=2))
+            run["status"] = "dry-run"
         finish(args, pr, issue, base, head, out, run)
 
 
