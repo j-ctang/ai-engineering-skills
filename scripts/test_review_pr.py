@@ -1,6 +1,6 @@
 import unittest
 
-from review_pr import classify, render, validate
+from review_pr import classify, conclude, downgrade, render, validate
 
 
 def numstat(*rows):
@@ -64,9 +64,11 @@ class ClassifyTest(unittest.TestCase):
         self.assertIn("deleted-tests", hits)
 
 
-def finding(severity, check="correctness"):
-    return {"check": check, "severity": severity, "path": "a.ts", "line": 1,
-            "problem": "P.", "failure_scenario": "F.", "fix": "X."}
+def finding(severity, check="correctness", category=None):
+    if category is None:
+        category = "wrong-behavior" if severity == "blocker" else "none"
+    return {"check": check, "severity": severity, "category": category, "path": "a.ts",
+            "line": 1, "problem": "P.", "failure_scenario": "F.", "fix": "X."}
 
 
 def checks(**fails):
@@ -101,6 +103,49 @@ class ValidateTest(unittest.TestCase):
         review = validate({"checks": checks(), "findings": [finding("nit")] * 5,
                            "follow_ups": []})
         self.assertEqual(len(review["findings"]), 3)
+
+
+    def test_unknown_category_rejected(self):
+        bad = finding("blocker", category="style")
+        with self.assertRaises(ValueError):
+            validate({"checks": checks(correctness="fail"), "findings": [bad], "follow_ups": []})
+
+
+class DowngradeTest(unittest.TestCase):
+    def test_blocker_without_category_downgraded(self):
+        review = {"checks": checks(correctness="fail"),
+                  "findings": [finding("blocker", category="none")], "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 1)
+        self.assertEqual(review["findings"][0]["severity"], "should-fix")
+        self.assertEqual(review["checks"]["correctness"], "pass")
+
+    def test_check_with_real_blocker_stays_failed(self):
+        review = {"checks": checks(correctness="fail"),
+                  "findings": [finding("blocker", category="none"), finding("blocker")],
+                  "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 1)
+        self.assertEqual(review["checks"]["correctness"], "fail")
+
+    def test_categorized_blockers_kept(self):
+        review = {"checks": checks(safety="fail", tests="fail"),
+                  "findings": [finding("blocker", "safety", "security"),
+                               finding("blocker", "tests", "weakened-gate")],
+                  "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 0)
+        self.assertEqual([f["severity"] for f in review["findings"]], ["blocker"] * 2)
+
+
+class ConcludeTest(unittest.TestCase):
+    def test_run_record_counts_downgrades(self):
+        review = {"checks": checks(correctness="fail"),
+                  "findings": [finding("blocker", category="none"), finding("nit")],
+                  "follow_ups": []}
+        run = {}
+        comment = conclude(validate(review), "S", [], run)
+        self.assertEqual(run["downgraded"], 1)
+        self.assertEqual(run["verdict"], "Ready to merge")
+        self.assertEqual(run["findings"], {"blocker": 0, "should-fix": 1, "nit": 1})
+        self.assertIn("Ready to merge", comment)
 
 
 class RenderTest(unittest.TestCase):

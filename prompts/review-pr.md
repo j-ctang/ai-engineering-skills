@@ -47,9 +47,13 @@ Work through these checks in this order. Give each one `pass`, `fail`, or
 
 Severity:
 - blocker: wrong behavior, data loss, security problem, weakened gate, or an
-  unmet acceptance criterion.
+  unmet acceptance criterion. Set `category` to the reason:
+  `wrong-behavior` (includes data loss), `security`, `weakened-gate`, or
+  `unmet-acceptance`. A blocker with category `none` becomes should-fix.
 - should-fix: a real problem that does not block merging.
 - nit: a small clarity fix. Report at most three.
+Should-fix and nit findings use category `none` unless one of the reasons
+above fits.
 
 VERIFY
 Use two passes.
