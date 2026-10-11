@@ -6,9 +6,10 @@ Find every real defect in PR #{{PR}} in {{REPO}} that should block or
 change it, and nothing else.
 
 SCOPE
-Review only this diff: `git diff {{BASE_SHA}}..{{HEAD_SHA}}` in the current
-directory. Read any repo file you need for context. Do not change files,
-commit, push, or post anything.
+Review only the diff from {{BASE_SHA}} to {{HEAD_SHA}}, saved at
+`{{DIFF_PATH}}`. The current directory is a clean checkout of the head
+commit. Read any repo file you need for context. Do not change files, commit,
+push, or post anything.
 
 CONTEXT
 - The repo's `AGENTS.md` defines risk labels, protected paths, and writing

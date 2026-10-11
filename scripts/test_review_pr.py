@@ -22,6 +22,20 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate({"checks": checks(), "findings": [finding("blocker")], "follow_ups": []})
 
+    def test_missing_key_rejected(self):
+        with self.assertRaises(ValueError):
+            validate({"checks": checks(), "findings": []})
+
+    def test_unknown_severity_rejected(self):
+        bad = dict(finding("nit"), severity="critical")
+        with self.assertRaises(ValueError):
+            validate({"checks": checks(), "findings": [bad], "follow_ups": []})
+
+    def test_extra_finding_field_rejected(self):
+        bad = dict(finding("nit"), extra="x")
+        with self.assertRaises(ValueError):
+            validate({"checks": checks(), "findings": [bad], "follow_ups": []})
+
     def test_nits_capped(self):
         review = validate({"checks": checks(), "findings": [finding("nit")] * 5,
                            "follow_ups": []})
