@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checks", "findings", "follow_ups"],
+  "properties": {
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"],
+      "properties": {
+        "scope": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "acceptance": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "correctness": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "tests": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "safety": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "docs": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+        "pr_hygiene": {"type": "string", "enum": ["pass", "fail", "n/a"]}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "severity", "path", "line", "problem", "failure_scenario", "fix"],
+        "properties": {
+          "check": {"type": "string", "enum": ["scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"]},
+          "severity": {"type": "string", "enum": ["blocker", "should-fix", "nit"]},
+          "path": {"type": "string"},
+          "line": {"type": "integer"},
+          "problem": {"type": "string"},
+          "failure_scenario": {"type": "string"},
+          "fix": {"type": "string"}
+        }
+      }
+    },
+    "follow_ups": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}
