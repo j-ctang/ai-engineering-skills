@@ -106,7 +106,9 @@ staging, quota used per merged PR, time to merge.
 
 ## Reference
 
-- `HANDOFF.md`: current state and next steps.
+- Handoff (outside the repo):
+  `~/dev/superpowers-docs/ai-engineering-skills/HANDOFF.md`. Handoffs,
+  specs, plans, and other working docs never go into the repo.
 - `docs/research/`: cited research reports (Codex, Oct 2026).
 - `docs/notes/pstack.md`: notes on Lauren Tan's public pstack harness.
 - Spec: `~/dev/superpowers-docs/ai-engineering-skills/specs/2026-10-07-harness-design.md`.
