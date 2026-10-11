@@ -49,6 +49,11 @@ credentials in GitHub Actions.
     `none`). A blocker with `none` becomes should-fix; `run.json` records
     `downgraded`. Known gap: the script trusts the label, so a model can still
     tag a minor finding `wrong-behavior`.
+  - Hardening (PR #9): every run writes `run.json` with `status`
+    (`ok`, `failed` plus `error`, or `dry-run`). CI comes from check runs and
+    commit statuses on the pinned head. Git output is parsed with `-z`; size
+    uses rename detection, escalation checks both sides of a rename, and a
+    test moved out of the test paths counts as deleted.
   - Posting is a separate step: `gh pr comment <pr> -R <repo> -F <dir>/comment.md`.
   - Tests: `python3 -m unittest discover -s scripts -p 'test_*.py'`.
 - Tiers (merged in #4/#5): S one pass; M per-file; M+ adds a safety pass for CI, agent
@@ -81,16 +86,27 @@ credentials in GitHub Actions.
 - PR #7 was the first harness PR reviewed by `review_pr.py` itself (Codex).
   Round 1 found one valid blocker (an acceptance item had no test); round 2
   passed. Each Codex run took 20-25 seconds.
+- PR #9 (Codex review, two rounds, about 49 seconds each): round 1 found
+  three real blockers, including a regression (commit statuses dropped when
+  moving off `gh pr checks`). Round 2 again found a new issue instead of
+  checking the round 1 fixes.
+- Post each review on the PR before committing its fixes. GitHub orders
+  commits by commit date, not push date, so posting late cannot be fixed by
+  re-pushing. Check whether a PR is merged before rewriting its branch.
 - Prefer mechanical checks over extra agent passes. Re-running a model to
   judge severity costs quota every review; a script rule costs nothing.
 
 ## Next steps
 
-1. Review tool hardening, one PR under 300 lines:
-   - Keep the run record when a run fails (status and error).
-   - Read CI results for the pinned head commit, not the PR's current head.
-   - Parse git output with `-z`; measure size with rename detection on, but
-     escalate on both sides of a rename.
+1. CodeRabbit trial, early and alongside our own review. The human installs
+   the CodeRabbit GitHub App on this repo only (free for public repos; no
+   Actions secrets). Then:
+   - Run it on the next harness PR (step 2) next to `review_pr.py`. Compare
+     findings: overlap, misses, false blockers, noise, time to first comment.
+   - Only add a `.coderabbit.yaml` if the defaults are noisy; keep it short.
+   - Record the comparison in `docs/notes/coderabbit-trial.md` and decide
+     whether it stays, where it fits in the flow, and whether it reaches
+     jev-prune. Until then it is an extra signal, never a gate.
 2. Scoped re-review, its own PR: round 2+ checks only earlier findings plus
    the diff since the last reviewed commit.
    - Optional, only if inflation persists: a script rule that the category
@@ -125,6 +141,8 @@ credentials in GitHub Actions.
   lines anywhere.
 - The human prefers our own review tool over vendor `/code-review` commands.
 - Two review rounds per PR, then stop and report.
+- Post every review round on the PR before committing its fixes, then post
+  a short comment naming the fixing commits (now in `~/.codex/AGENTS.md`).
 - Budget: Claude Pro + ChatGPT Plus. One implementer and one reviewer at a
   time.
 
