@@ -1,6 +1,6 @@
 import unittest
 
-from review_pr import classify, downgrade, render, validate
+from review_pr import classify, conclude, downgrade, render, validate
 
 
 def numstat(*rows):
@@ -133,6 +133,19 @@ class DowngradeTest(unittest.TestCase):
                   "follow_ups": []}
         self.assertEqual(downgrade(validate(review)), 0)
         self.assertEqual([f["severity"] for f in review["findings"]], ["blocker"] * 2)
+
+
+class ConcludeTest(unittest.TestCase):
+    def test_run_record_counts_downgrades(self):
+        review = {"checks": checks(correctness="fail"),
+                  "findings": [finding("blocker", category="none"), finding("nit")],
+                  "follow_ups": []}
+        run = {}
+        comment = conclude(validate(review), "S", [], run)
+        self.assertEqual(run["downgraded"], 1)
+        self.assertEqual(run["verdict"], "Ready to merge")
+        self.assertEqual(run["findings"], {"blocker": 0, "should-fix": 1, "nit": 1})
+        self.assertIn("Ready to merge", comment)
 
 
 class RenderTest(unittest.TestCase):

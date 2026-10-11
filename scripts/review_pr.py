@@ -158,6 +158,16 @@ def render(verdict, tier, escalations, review):
     return "\n".join(out) + "\n"
 
 
+def conclude(review, tier, escalations, run):
+    """Apply downgrades, fill the run record, and return the comment."""
+    run["downgraded"] = downgrade(review)
+    blockers = any(f["severity"] == "blocker" for f in review["findings"])
+    run["verdict"] = "Changes needed" if blockers else "Ready to merge"
+    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"])
+                       for s in SEVERITIES}
+    return render(run["verdict"], tier, escalations, review)
+
+
 def run_reviewer(reviewer, checkout, prompt, out):
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
@@ -272,14 +282,7 @@ def main():
     started = time.time()
     review = validate(run_reviewer(args.reviewer, args.checkout, prompt, out))
     run["seconds"] = round(time.time() - started)
-    run["downgraded"] = downgrade(review)
-    blockers = any(f["severity"] == "blocker" for f in review["findings"])
-    verdict = "Changes needed" if blockers else "Ready to merge"
-    comment = render(verdict, tier, escalations, review)
-
-    run["verdict"] = verdict
-    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"])
-                       for s in ("blocker", "should-fix", "nit")}
+    comment = conclude(review, tier, escalations, run)
     (out / "review.json").write_text(json.dumps(review, indent=2))
     (out / "comment.md").write_text(comment)
     (out / "run.json").write_text(json.dumps(run, indent=2))
