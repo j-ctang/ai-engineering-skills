@@ -44,10 +44,14 @@ credentials in GitHub Actions.
     prompt, runs the model, validates JSON, computes the verdict, and writes
     `/tmp/review/<repo>-<pr>-<sha>-<time>/` (diff, prompt, review.json,
     comment.md, run.json).
+  - Severity guard (PR #7): each finding has a `category`
+    (`wrong-behavior`, `security`, `weakened-gate`, `unmet-acceptance`,
+    `none`). A blocker with `none` becomes should-fix; `run.json` records
+    `downgraded`. Known gap: the script trusts the label, so a model can still
+    tag a minor finding `wrong-behavior`.
   - Posting is a separate step: `gh pr comment <pr> -R <repo> -F <dir>/comment.md`.
   - Tests: `python3 -m unittest discover -s scripts -p 'test_*.py'`.
-- Tiers (PR #5, waiting for the human to merge; until then `main` has no
-  tiering): S one pass; M per-file; M+ adds a safety pass for CI, agent
+- Tiers (merged in #4/#5): S one pass; M per-file; M+ adds a safety pass for CI, agent
   rules, dependencies, test gates, secrets, or deleted tests; L (over 300
   lines or 10 files) is not reviewed and asks for a split. Tests, lockfiles,
   and generated files do not count toward size.
@@ -74,21 +78,23 @@ credentials in GitHub Actions.
 - `gh pr view` reports no closing issues for PRs into a non-default branch;
   the script reads `Closes #N` from the body instead.
 - In zsh, `$S:r...` is a modifier. Quote as `"${S}:refs/heads/main"`.
+- PR #7 was the first harness PR reviewed by `review_pr.py` itself (Codex).
+  Round 1 found one valid blocker (an acceptance item had no test); round 2
+  passed. Each Codex run took 20-25 seconds.
+- Prefer mechanical checks over extra agent passes. Re-running a model to
+  judge severity costs quota every review; a script rule costs nothing.
 
 ## Next steps
 
-1. Human merges #5 (review tiers onto `main`). Then delete the
-   `feat/review-structured` and `feat/review-tiers` remote branches.
-2. Review tool follow-up, one PR under 300 lines. Open items from Codex
-   round 2, all should-fix:
-   - Severity guard: each blocker must name its category (wrong behavior,
-     security, weakened gate, unmet acceptance) or the script downgrades it.
-   - Scoped re-review: round 2+ checks only earlier findings plus the diff
-     since the last reviewed commit.
+1. Review tool hardening, one PR under 300 lines:
    - Keep the run record when a run fails (status and error).
    - Read CI results for the pinned head commit, not the PR's current head.
    - Parse git output with `-z`; measure size with rename detection on, but
      escalate on both sides of a rename.
+2. Scoped re-review, its own PR: round 2+ checks only earlier findings plus
+   the diff since the last reviewed commit.
+   - Optional, only if inflation persists: a script rule that the category
+     fits the check (for example `weakened-gate` only under `tests`).
 3. Run the Claude reviewer path end to end on a PR that Codex wrote. It is
    unit-tested and the schema output shape is verified, but no real review
    has run through it yet.
