@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import review_pr
-from review_pr import (classify, conclude, diff_stats, downgrade, earlier_block,
+from review_pr import (assess_follow_up, classify, conclude, diff_stats, downgrade, earlier_block,
                        format_checks, is_ancestor, load_earlier, new_record, recheck,
                        recheck_schema, recorded, render, validate)
 
@@ -300,6 +300,20 @@ class RecheckTest(unittest.TestCase):
         self.assertEqual(review["findings"], [self.earlier[0]])
         self.assertEqual(review["checks"]["correctness"], "fail")
         self.assertEqual([f["status"] for f in review["earlier"]], ["open", "fixed"])
+
+    def test_check_failed_by_open_earlier_blocker_accepted(self):
+        review = self.review([status(1, "open"), status(2, "fixed")], correctness="fail")
+        self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}),
+                         {"fixed": 1, "open": 1})
+        run = {}
+        conclude(review, "S", [], run)
+        self.assertEqual(run["verdict"], "Changes needed")
+
+    def test_follow_up_still_rejects_bad_findings(self):
+        bad = dict(finding("nit"), severity="critical")
+        with self.assertRaises(ValueError):
+            assess_follow_up(self.review([status(1, "open"), status(2, "fixed")], [bad]),
+                             self.earlier, {"a.ts"})
 
     def test_missing_status_rejected(self):
         with self.assertRaises(ValueError):

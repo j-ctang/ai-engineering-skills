@@ -148,8 +148,12 @@ def classify(rows, deleted):
     return ("M+" if hits else "M"), lines, files, hits
 
 
-def validate(review):
-    """Reject output that breaks the schema or rules it cannot express."""
+def validate(review, follow_up=False):
+    """Reject output that breaks the schema or rules it cannot express.
+
+    A follow-up skips the check-versus-blocker rule: a check can fail on an
+    open earlier finding, and recheck recomputes every check anyway.
+    """
     if set(review) != {"checks", "findings", "follow_ups"} or set(review["checks"]) != CHECKS:
         raise ValueError("review does not match the schema")
     if any(s not in ("pass", "fail", "n/a") for s in review["checks"].values()):
@@ -161,7 +165,7 @@ def validate(review):
             raise ValueError(f"finding does not match the schema: {f}")
     blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
     for check, status in review["checks"].items():
-        if (status == "fail") != (check in blocked):
+        if not follow_up and (status == "fail") != (check in blocked):
             raise ValueError(f"check {check} is {status} but blocker findings say otherwise")
     kept, nits = [], 0
     for f in review["findings"]:
@@ -257,6 +261,14 @@ def recheck(review, earlier, changed):
     review["findings"] = still_open + new
     sync_checks(review)
     return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
+
+
+def assess_follow_up(review, earlier, changed):
+    """Validate a follow-up answer and merge in the earlier findings."""
+    statuses = review.pop("earlier", None)
+    validate(review, follow_up=True)
+    review["earlier"] = statuses
+    return recheck(review, earlier, changed)
 
 
 def render(verdict, tier, escalations, review):
@@ -456,11 +468,10 @@ def finish(args, pr, issue, base, head, out, run, earlier, changed):
 
     schema = recheck_schema() if earlier else json.loads(SCHEMA.read_text())
     review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
-    statuses = review.pop("earlier", None)
-    validate(review)
     if earlier:
-        review["earlier"] = statuses
-        run["earlier"] = recheck(review, earlier[1], changed)
+        run["earlier"] = assess_follow_up(review, earlier[1], changed)
+    else:
+        validate(review)
     comment = conclude(review, tier, escalations, run)
     (out / "review.json").write_text(json.dumps(review, indent=2))
     (out / "comment.md").write_text(comment)
