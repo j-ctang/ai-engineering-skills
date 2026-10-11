@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 import review_pr
-from review_pr import (classify, conclude, diff_stats, downgrade, format_checks, render,
-                       review, validate)
+from review_pr import (classify, conclude, diff_stats, downgrade, format_checks, recorded,
+                       render, validate)
 
 
 def numstat(*rows):
@@ -138,16 +138,21 @@ class CiTest(unittest.TestCase):
     def test_format_checks(self):
         runs = [{"name": "offline-check", "status": "completed", "conclusion": "success"},
                 {"name": "lint", "status": "in_progress", "conclusion": None}]
-        self.assertEqual(format_checks(runs), "offline-check: success, lint: in_progress")
-        self.assertEqual(format_checks([]), "none")
+        statuses = [{"context": "deploy", "state": "failure"}]
+        self.assertEqual(format_checks(runs, statuses),
+                         "offline-check: success, lint: in_progress, deploy: failure")
+        self.assertEqual(format_checks([], []), "none")
 
-    def test_reads_pinned_head(self):
-        with mock.patch.object(review_pr, "gh_json", return_value={"check_runs": []}) as gh:
+    def test_reads_pinned_head_on_every_page(self):
+        with mock.patch.object(review_pr, "sh", return_value="") as sh:
             review_pr.ci_result("o/r", "abc123")
-        self.assertIn("repos/o/r/commits/abc123/check-runs", gh.call_args.args[1])
+        urls = [c.args[3] for c in sh.call_args_list]
+        self.assertEqual(urls, ["repos/o/r/commits/abc123/check-runs",
+                                "repos/o/r/commits/abc123/status"])
+        self.assertTrue(all("--paginate" in c.args for c in sh.call_args_list))
 
 
-class ReviewRunTest(unittest.TestCase):
+class RecordedTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.out = Path(self.dir.name)
@@ -155,22 +160,25 @@ class ReviewRunTest(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def test_failed_run_keeps_record(self):
-        run = {"pr": 1}
-        with mock.patch.object(review_pr, "run_reviewer", side_effect=ValueError("bad JSON")):
-            with self.assertRaises(ValueError):
-                review("codex", self.out, "prompt", self.out, run, "S", [])
-        record = json.loads((self.out / "run.json").read_text())
-        self.assertEqual(record["status"], "failed")
-        self.assertEqual(record["error"], "ValueError: bad JSON")
+    def record(self):
+        return json.loads((self.out / "run.json").read_text())
 
-    def test_good_run_records_ok(self):
-        result = {"checks": checks(), "findings": [], "follow_ups": []}
-        with mock.patch.object(review_pr, "run_reviewer", return_value=result):
-            path = review("codex", self.out, "prompt", self.out, {}, "S", [])
-        record = json.loads((self.out / "run.json").read_text())
-        self.assertEqual(record["status"], "ok")
-        self.assertIn("Ready to merge", path.read_text())
+    def test_failure_keeps_record(self):
+        with self.assertRaises(ValueError):
+            with recorded(self.out, {"pr": 1}):
+                raise ValueError("bad JSON")
+        self.assertEqual(self.record()["status"], "failed")
+        self.assertEqual(self.record()["error"], "ValueError: bad JSON")
+
+    def test_success_records_ok(self):
+        with recorded(self.out, {"pr": 1}):
+            pass
+        self.assertEqual(self.record()["status"], "ok")
+
+    def test_dry_run_status_kept(self):
+        with recorded(self.out, {"status": "dry-run"}):
+            pass
+        self.assertEqual(self.record()["status"], "dry-run")
 
 
 class ValidateTest(unittest.TestCase):

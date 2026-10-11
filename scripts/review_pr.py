@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
@@ -211,37 +212,35 @@ def conclude(review, tier, escalations, run):
     return render(run["verdict"], tier, escalations, review)
 
 
-def format_checks(runs):
-    """Summarize check runs as "name: conclusion", or status while running."""
-    return ", ".join(f"{r['name']}: {r['conclusion'] or r['status']}" for r in runs) or "none"
+def format_checks(runs, statuses):
+    """Summarize check runs and commit statuses as "name: result"."""
+    results = [f"{r['name']}: {r['conclusion'] or r['status']}" for r in runs]
+    results += [f"{st['context']}: {st['state']}" for st in statuses]
+    return ", ".join(results) or "none"
 
 
 def ci_result(repo, head):
-    """Read check runs for the pinned head, not whatever the PR points at now."""
-    data = gh_json("api", f"repos/{repo}/commits/{head}/check-runs?per_page=100")
-    return format_checks(data["check_runs"])
+    """Read CI for the pinned head, not whatever the PR points at now."""
+    def pages(path, key):
+        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}",
+                 "--jq", f".{key}[]")
+        return [json.loads(line) for line in out.splitlines()]
+    return format_checks(pages("check-runs", "check_runs"), pages("status", "statuses"))
 
 
-def review(reviewer, checkout, prompt, out, run, tier, escalations):
-    """Run the model and write the run directory. Return the comment path.
-
-    A failed run still writes run.json with the error, then re-raises.
-    """
+@contextmanager
+def recorded(out, run):
+    """Write run.json when the block ends, with the error if it failed."""
     started = time.time()
     try:
-        result = validate(run_reviewer(reviewer, checkout, prompt, out))
-    except Exception as e:
-        run.update(status="failed", error=f"{type(e).__name__}: {e}"[:500],
-                   seconds=round(time.time() - started))
-        (out / "run.json").write_text(json.dumps(run, indent=2))
+        yield
+        run.setdefault("status", "ok")
+    except BaseException as e:
+        run.update(status="failed", error=f"{type(e).__name__}: {e}"[:500])
         raise
-    run["seconds"] = round(time.time() - started)
-    run["status"] = "ok"
-    comment = conclude(result, tier, escalations, run)
-    (out / "review.json").write_text(json.dumps(result, indent=2))
-    (out / "comment.md").write_text(comment)
-    (out / "run.json").write_text(json.dumps(run, indent=2))
-    return out / "comment.md"
+    finally:
+        run["seconds"] = round(time.time() - started)
+        (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
 def run_reviewer(reviewer, checkout, prompt, out):
@@ -316,18 +315,24 @@ def main():
     }
     if args.dry_run:
         print(json.dumps(run, indent=2))
+        run["status"] = "dry-run"
+    with recorded(out, run):
+        finish(args, pr, issue, base, head, out, run)
 
+
+def finish(args, pr, issue, base, head, out, run):
+    """Write the prompt, run the model, and write the comment."""
+    tier, escalations = run["tier"], run["escalations"]
     if tier == "L":
         if args.dry_run:
             return
         verdict = "Changes needed"
-        run.update(status="ok", verdict=verdict, findings={})
+        run.update(verdict=verdict, findings={})
         (out / "comment.md").write_text(
-            f"**Verdict:** {verdict}\n\nToo large to review: {lines} changed lines in "
-            f"{files} files. Split into PRs of at most {MEDIUM_LINES} lines and "
+            f"**Verdict:** {verdict}\n\nToo large to review: {run['lines']} changed lines in "
+            f"{run['files']} files. Split into PRs of at most {MEDIUM_LINES} lines and "
             f"{MEDIUM_FILES} files. Tests, lockfiles, and generated files do not count.\n"
         )
-        (out / "run.json").write_text(json.dumps(run, indent=2))
         print(out / "comment.md")
         return
 
@@ -347,7 +352,11 @@ def main():
     if args.dry_run:
         return
 
-    print(review(args.reviewer, args.checkout, prompt, out, run, tier, escalations))
+    review = validate(run_reviewer(args.reviewer, args.checkout, prompt, out))
+    comment = conclude(review, tier, escalations, run)
+    (out / "review.json").write_text(json.dumps(review, indent=2))
+    (out / "comment.md").write_text(comment)
+    print(out / "comment.md")
 
 
 if __name__ == "__main__":
