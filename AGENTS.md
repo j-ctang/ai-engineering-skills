@@ -96,6 +96,8 @@ orchestrators.
   Open an issue instead.
 - Never weaken, skip, or delete a test to make CI pass.
 - Cap fix-forward attempts at two, then report the blocker.
+- CodeRabbit comments are low-precision advice (likely under 45%). Verify
+  each before acting; never treat one as a blocker alone.
 - Run the full local check suite before opening a PR.
 - The PR body links the issue and states acceptance criteria and evidence.
 
