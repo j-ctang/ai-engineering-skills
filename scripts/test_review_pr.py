@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest import mock
 
 import review_pr
-from review_pr import (classify, conclude, diff_stats, downgrade, format_checks, recorded,
-                       render, validate)
+from review_pr import (classify, conclude, diff_stats, downgrade, earlier_block,
+                       format_checks, is_ancestor, load_earlier, new_record, recheck,
+                       recheck_schema, recorded, render, validate)
 
 
 def numstat(*rows):
@@ -126,6 +127,18 @@ class GitDiffTest(unittest.TestCase):
         self.git("mv", "test/a.test.ts", "src/a.ts")
         head = self.commit()
         self.assertIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
+
+    def test_ancestor_check(self):
+        head = self.commit_change("src/new.ts")
+        self.assertTrue(is_ancestor(self.repo, self.base, head))
+        self.git("checkout", "-q", "-b", "other", self.base)
+        other = self.commit_change("src/other.ts")
+        self.assertFalse(is_ancestor(self.repo, head, other))
+        self.assertFalse(is_ancestor(self.repo, "0" * 40, other))
+
+    def commit_change(self, path):
+        self.write(path, "a\n")
+        return self.commit()
 
     def test_test_moved_between_test_paths_is_not_deleted(self):
         (self.repo / "tests").mkdir()
@@ -263,6 +276,140 @@ class RenderTest(unittest.TestCase):
         self.assertLess(text.index("blocker"), text.index("nit"))
         self.assertIn("Review tier: M+ (ci)", text)
         self.assertIn("Follow-ups", text)
+
+
+def earlier_finding(severity, path="a.ts"):
+    return dict(finding(severity), path=path)
+
+
+def status(id, state):
+    return {"id": id, "status": state, "note": "N."}
+
+
+class RecheckTest(unittest.TestCase):
+    def setUp(self):
+        self.earlier = [earlier_finding("blocker", "old.ts"), earlier_finding("should-fix", "b.ts")]
+
+    def review(self, statuses, findings=(), **fails):
+        return {"checks": checks(**fails), "findings": list(findings), "follow_ups": [],
+                "earlier": statuses}
+
+    def test_open_earlier_finding_keeps_severity(self):
+        review = self.review([status(1, "open"), status(2, "fixed")])
+        self.assertEqual(recheck(review, self.earlier, {"a.ts"}), {"fixed": 1, "open": 1})
+        self.assertEqual(review["findings"], [self.earlier[0]])
+        self.assertEqual(review["checks"]["correctness"], "fail")
+        self.assertEqual([f["status"] for f in review["earlier"]], ["open", "fixed"])
+
+    def test_missing_status_rejected(self):
+        with self.assertRaises(ValueError):
+            recheck(self.review([status(1, "fixed")]), self.earlier, set())
+
+    def test_unknown_or_duplicate_id_rejected(self):
+        for statuses in ([status(1, "fixed"), status(3, "fixed")],
+                         [status(1, "fixed"), status(1, "open")]):
+            with self.subTest(statuses=statuses), self.assertRaises(ValueError):
+                recheck(self.review(statuses), self.earlier, set())
+
+    def test_missing_earlier_key_rejected(self):
+        review = self.review([])
+        del review["earlier"]
+        with self.assertRaises(ValueError):
+            recheck(review, self.earlier, set())
+
+    def test_unknown_status_rejected(self):
+        with self.assertRaises(ValueError):
+            recheck(self.review([status(1, "wontfix"), status(2, "fixed")]), self.earlier, set())
+
+    def test_new_finding_outside_new_commits_becomes_follow_up(self):
+        outside = dict(finding("blocker"), path="old.ts")
+        review = self.review([status(1, "fixed"), status(2, "fixed")],
+                             [finding("nit"), outside], correctness="fail")
+        recheck(review, self.earlier, {"a.ts"})
+        self.assertEqual(review["findings"], [finding("nit")])
+        self.assertEqual(review["follow_ups"], ["old.ts:1: P."])
+        self.assertEqual(review["checks"]["correctness"], "pass")
+
+    def test_verdict_counts_open_earlier_and_new_blockers(self):
+        review = self.review([status(1, "fixed"), status(2, "fixed")])
+        recheck(review, self.earlier, {"a.ts"})
+        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0],
+                         "**Verdict:** Ready to merge")
+        review = self.review([status(1, "open"), status(2, "fixed")])
+        recheck(review, self.earlier, {"a.ts"})
+        run = {}
+        conclude(review, "S", [], run)
+        self.assertEqual(run["verdict"], "Changes needed")
+        review = self.review([status(1, "fixed"), status(2, "fixed")],
+                             [finding("blocker")], correctness="fail")
+        recheck(review, self.earlier, {"a.ts"})
+        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0],
+                         "**Verdict:** Changes needed")
+
+    def test_render_lists_fixed_findings(self):
+        review = self.review([status(1, "fixed"), status(2, "open")])
+        recheck(review, self.earlier, {"a.ts"})
+        text = conclude(review, "S", [], {})
+        self.assertIn("Fixed since the last review:", text)
+        self.assertIn("`old.ts:1`: P. N.", text)
+
+    def test_schema_requires_earlier(self):
+        schema = recheck_schema()
+        self.assertIn("earlier", schema["required"])
+        item = schema["properties"]["earlier"]["items"]
+        self.assertEqual(item["properties"]["status"]["enum"], ["fixed", "open"])
+        self.assertNotIn("earlier", json.loads(review_pr.SCHEMA.read_text())["required"])
+
+    def test_earlier_block_numbers_findings(self):
+        text = earlier_block(self.earlier, "abc123")
+        self.assertIn("abc123", text)
+        self.assertIn("1. [blocker] `old.ts:1`: P. Fix: X.", text)
+        self.assertIn("2. [should-fix] `b.ts:1`", text)
+
+
+class NewRecordTest(unittest.TestCase):
+    def args(self, since=None):
+        return mock.Mock(reviewer="codex", repo="o/r", pr=3, since=since)
+
+    def test_first_round(self):
+        run = new_record(self.args(), "abc", None)
+        self.assertEqual((run["round"], "since" in run), (1, False))
+
+    def test_follow_up_counts_rounds_and_names_earlier_run(self):
+        run = new_record(self.args(Path("/tmp/review/r1")), "def", ({"round": 2}, []))
+        self.assertEqual((run["round"], run["since"]), (3, "/tmp/review/r1"))
+        run = new_record(self.args(Path("/tmp/review/r0")), "def", ({}, []))
+        self.assertEqual(run["round"], 2)
+
+
+class LoadEarlierTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.out = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write(self, run, findings=None):
+        (self.out / "run.json").write_text(json.dumps(run))
+        if findings is not None:
+            (self.out / "review.json").write_text(json.dumps({"findings": findings}))
+
+    def test_loads_finished_run(self):
+        run = {"repo": "o/r", "pr": 3, "status": "ok", "head": "abc", "round": 2}
+        self.write(run, [finding("nit")])
+        self.assertEqual(load_earlier(self.out, "o/r", 3), (run, [finding("nit")]))
+
+    def test_rejects_other_pr_failed_run_or_missing_review(self):
+        cases = [({"repo": "o/r", "pr": 4, "status": "ok", "head": "a"}, []),
+                 ({"repo": "o/r", "pr": 3, "status": "failed", "head": "a"}, []),
+                 ({"repo": "o/r", "pr": 3, "status": "ok", "head": "a"}, None)]
+        for run, findings in cases:
+            with self.subTest(run=run, findings=findings):
+                (self.out / "review.json").unlink(missing_ok=True)
+                self.write(run, findings)
+                with self.assertRaises(ValueError):
+                    load_earlier(self.out, "o/r", 3)
 
 
 if __name__ == "__main__":

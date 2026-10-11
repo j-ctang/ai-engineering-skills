@@ -30,6 +30,7 @@ CONTEXT
 {{PR_BODY}}
 </pr_description>
 
+{{EARLIER}}
 ACCEPTANCE
 Work through these checks in this order. Give each one `pass`, `fail`, or
 `n/a`. A check is `fail` only if it has at least one blocker finding.

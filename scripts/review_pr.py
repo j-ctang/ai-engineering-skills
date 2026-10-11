@@ -2,7 +2,7 @@
 """Run an independent, read-only PR review with Codex or Claude.
 
 Usage: scripts/review_pr.py <codex|claude> <owner/repo> <pr> <checkout-dir>
-       [--dry-run]
+       [--since <earlier-run-dir>] [--dry-run]
 
 The script decides everything that can be decided mechanically: the pinned
 commit, the review tier, the output shape, and the verdict. The model only
@@ -10,6 +10,10 @@ reports findings. Each run gets its own directory under /tmp/review/ with
 diff.patch, prompt.md, review.json, comment.md, and run.json. Posting the
 comment is a separate, deliberate step:
 gh pr comment <pr> -R <repo> -F <run-dir>/comment.md
+
+A follow-up review (--since) reads only the commits after the earlier run's
+head. The model marks each earlier finding fixed or open and reports new
+findings in the new commits only.
 """
 
 import argparse
@@ -51,6 +55,7 @@ SEVERITIES = ["blocker", "should-fix", "nit"]
 # A blocker must name one of these reasons, or the script downgrades it.
 CATEGORIES = {"wrong-behavior", "security", "weakened-gate", "unmet-acceptance", "none"}
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
+STATUSES = ["fixed", "open"]
 
 TIER_INSTRUCTIONS = {
     "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
@@ -167,21 +172,91 @@ def validate(review):
     return review
 
 
-def downgrade(review):
-    """Turn blockers with no blocking reason into should-fix. Return the count.
+def sync_checks(review):
+    """Fail exactly the checks that still have a blocker."""
+    blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
+    for check, status in review["checks"].items():
+        if check in blocked:
+            review["checks"][check] = "fail"
+        elif status == "fail":
+            review["checks"][check] = "pass"
 
-    A check stays failed only while it still has a blocker.
-    """
+
+def downgrade(review):
+    """Turn blockers with no blocking reason into should-fix. Return the count."""
     count = 0
     for f in review["findings"]:
         if f["severity"] == "blocker" and f["category"] == "none":
             f["severity"] = "should-fix"
             count += 1
-    blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
-    for check, status in review["checks"].items():
-        if status == "fail" and check not in blocked:
-            review["checks"][check] = "pass"
+    sync_checks(review)
     return count
+
+
+def recheck_schema():
+    """The review schema plus one status for each earlier finding."""
+    schema = json.loads(SCHEMA.read_text())
+    schema["required"].append("earlier")
+    schema["properties"]["earlier"] = {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["id", "status", "note"],
+        "properties": {"id": {"type": "integer"},
+                       "status": {"type": "string", "enum": STATUSES},
+                       "note": {"type": "string"}},
+    }}
+    return schema
+
+
+def load_earlier(path, repo, pr):
+    """Return (run, findings) from an earlier finished review of the same PR."""
+    run = json.loads((path / "run.json").read_text())
+    review = path / "review.json"
+    if (run.get("repo"), run.get("pr"), run.get("status")) != (repo, pr, "ok") \
+            or not review.exists():
+        raise ValueError(f"{path} is not a finished review of {repo}#{pr}")
+    return run, json.loads(review.read_text())["findings"]
+
+
+def is_ancestor(checkout, old, new):
+    return subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=checkout,
+                          capture_output=True).returncode == 0
+
+
+def earlier_block(findings, head):
+    """Describe the earlier findings for the follow-up prompt."""
+    lines = [f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
+             for i, f in enumerate(findings, 1)]
+    return (
+        f"<earlier_findings>\nThis is a follow-up review. The earlier review of commit "
+        f"{head} reported the findings below. The diff holds only the commits since then.\n"
+        + "\n".join(lines or ["(none)"]) + "\n</earlier_findings>\n\n"
+        "For each earlier finding, add an `earlier` entry with its number, `fixed` or "
+        "`open`, and a one-sentence note. Report a new finding only for a defect the new "
+        "commits introduce. Code the earlier review already saw is out of scope.\n"
+    )
+
+
+def recheck(review, earlier, changed):
+    """Merge earlier findings into a follow-up review. Return the status counts.
+
+    Each earlier finding needs exactly one status. An open one comes back with
+    its earlier severity. A new finding on a file the new commits did not touch
+    becomes a follow-up.
+    """
+    statuses = review.get("earlier")
+    if (not isinstance(statuses, list)
+            or any(not isinstance(s, dict) or set(s) != {"id", "status", "note"}
+                   or s["status"] not in STATUSES for s in statuses)
+            or sorted(s["id"] for s in statuses) != list(range(1, len(earlier) + 1))):
+        raise ValueError("earlier statuses must cover each earlier finding once")
+    new = [f for f in review["findings"] if f["path"] in changed]
+    review["follow_ups"] += [f"{f['path']}:{f['line']}: {f['problem']}"
+                             for f in review["findings"] if f["path"] not in changed]
+    still_open = [dict(earlier[s["id"] - 1]) for s in statuses if s["status"] == "open"]
+    review["earlier"] = [dict(earlier[s["id"] - 1], status=s["status"], note=s["note"])
+                         for s in statuses]
+    review["findings"] = still_open + new
+    sync_checks(review)
+    return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
 
 
 def render(verdict, tier, escalations, review):
@@ -192,6 +267,11 @@ def render(verdict, tier, escalations, review):
         review["findings"],
         key=lambda f: SEVERITIES.index(f["severity"]),
     )
+    fixed = [f for f in review.get("earlier", []) if f["status"] == "fixed"]
+    if fixed:
+        out.append("Fixed since the last review:")
+        out += [f"- `{f['path']}:{f['line']}`: {f['problem']} {f['note']}" for f in fixed]
+        out.append("")
     if not findings:
         out.append("No blocking findings.")
     for f in findings:
@@ -243,12 +323,13 @@ def recorded(out, run):
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
-def run_reviewer(reviewer, checkout, prompt, out):
+def run_reviewer(reviewer, checkout, prompt, out, schema):
+    (out / "schema.json").write_text(json.dumps(schema, indent=2))
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
             subprocess.run(
                 ["codex", "exec", "-C", str(checkout), "-s", "read-only", "--ephemeral",
-                 "--output-schema", str(SCHEMA), "-o", str(out / "raw.txt"), "-"],
+                 "--output-schema", str(out / "schema.json"), "-o", str(out / "raw.txt"), "-"],
                 input=prompt, text=True, stdout=log, stderr=log, check=True,
             )
         return json.loads((out / "raw.txt").read_text())
@@ -256,7 +337,7 @@ def run_reviewer(reviewer, checkout, prompt, out):
     # diff and repo files only.
     result = subprocess.run(
         ["claude", "-p", "--output-format", "json",
-         "--json-schema", SCHEMA.read_text(), "--add-dir", str(out),
+         "--json-schema", json.dumps(schema), "--add-dir", str(out),
          "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
          "--allowedTools", "Read,Grep,Glob"],
         cwd=checkout, input=prompt, text=True, capture_output=True, check=True,
@@ -272,6 +353,7 @@ def main():
     ap.add_argument("repo")
     ap.add_argument("pr", type=int)
     ap.add_argument("checkout", type=Path)
+    ap.add_argument("--since", type=Path, help="earlier run directory; review only newer commits")
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
     args = ap.parse_args()
 
@@ -295,6 +377,15 @@ def main():
     if sh("git", "status", "--porcelain", cwd=args.checkout).strip():
         sys.exit(f"{args.checkout} has uncommitted changes")
     base = sh("git", "merge-base", f"origin/{pr['baseRefName']}", head, cwd=args.checkout).strip()
+    earlier = None
+    if args.since:
+        try:
+            earlier = load_earlier(args.since, args.repo, args.pr)
+        except (OSError, ValueError) as e:
+            sys.exit(str(e))
+        base = earlier[0]["head"]
+        if not is_ancestor(args.checkout, base, head):
+            sys.exit(f"earlier head {base} is not an ancestor of {head}; review the full PR")
 
     diff = sh("git", "diff", f"{base}..{head}", cwd=args.checkout)
     if not diff.strip():
@@ -307,9 +398,11 @@ def main():
     (out / "diff.patch").write_text(diff)
 
     # From here on the run directory exists, so every exit leaves a run.json.
-    run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head}
+    run = new_record(args, head, earlier)
     with recorded(out, run):
-        tier, lines, files, escalations = classify(*diff_stats(args.checkout, base, head))
+        rows, deleted = diff_stats(args.checkout, base, head)
+        tier, lines, files, escalations = classify(rows, deleted)
+        changed = {p for _, _, names in rows for p in names}
         run.update(
             prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
             tier=tier, lines=lines, files=files, escalations=escalations,
@@ -317,10 +410,18 @@ def main():
         if args.dry_run:
             print(json.dumps(run, indent=2))
             run["status"] = "dry-run"
-        finish(args, pr, issue, base, head, out, run)
+        finish(args, pr, issue, base, head, out, run, earlier, changed)
 
 
-def finish(args, pr, issue, base, head, out, run):
+def new_record(args, head, earlier):
+    """Start the run record. A follow-up names its earlier run and counts rounds."""
+    run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head, "round": 1}
+    if earlier:
+        run.update(round=earlier[0].get("round", 1) + 1, since=str(args.since))
+    return run
+
+
+def finish(args, pr, issue, base, head, out, run, earlier, changed):
     """Write the prompt, run the model, and write the comment."""
     tier, escalations = run["tier"], run["escalations"]
     if tier == "L":
@@ -344,6 +445,7 @@ def finish(args, pr, issue, base, head, out, run):
         "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
                          "--json", "body", "--jq", ".body").strip(),
         "PR_BODY": pr["body"].strip(),
+        "EARLIER": earlier_block(earlier[1], base) if earlier else "",
     }
     prompt = PROMPT.read_text()
     for key, value in values.items():
@@ -352,7 +454,13 @@ def finish(args, pr, issue, base, head, out, run):
     if args.dry_run:
         return
 
-    review = validate(run_reviewer(args.reviewer, args.checkout, prompt, out))
+    schema = recheck_schema() if earlier else json.loads(SCHEMA.read_text())
+    review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    statuses = review.pop("earlier", None)
+    validate(review)
+    if earlier:
+        review["earlier"] = statuses
+        run["earlier"] = recheck(review, earlier[1], changed)
     comment = conclude(review, tier, escalations, run)
     (out / "review.json").write_text(json.dumps(review, indent=2))
     (out / "comment.md").write_text(comment)
