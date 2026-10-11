@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
@@ -74,14 +75,57 @@ def gh_json(*args):
     return json.loads(sh("gh", *args))
 
 
-def classify(numstat, deleted):
-    """Return (tier, lines, files, escalations) for a --no-renames numstat."""
+def parse_numstat(raw):
+    """Parse `git diff -z -M --numstat` into (added, removed, paths) rows.
+
+    A rename lists both paths, source first, so both sides can escalate.
+    """
+    rows, tokens = [], iter(raw.split("\0"))
+    for token in tokens:
+        if not token:
+            continue
+        added, removed, path = token.split("\t", 2)
+        paths = (path,) if path else (next(tokens), next(tokens))
+        rows.append((added, removed, paths))
+    return rows
+
+
+def parse_deleted(raw):
+    """Parse `git diff -z -M --name-status --diff-filter=DR` into removed paths.
+
+    A rename counts as a deletion of its source when it moves a test out of
+    the test paths, so a test cannot vanish by being renamed.
+    """
+    removed, tokens = [], iter(raw.split("\0"))
+    for status in tokens:
+        if status.startswith("D"):
+            removed.append(next(tokens))
+        elif status.startswith("R"):
+            source, dest = next(tokens), next(tokens)
+            if not TEST.search(dest):
+                removed.append(source)
+    return removed
+
+
+def diff_stats(checkout, base, head):
+    """Return (rows, deleted) for base..head, read with -z so paths stay unquoted."""
+    span = f"{base}..{head}"
+    rows = parse_numstat(sh("git", "diff", "-z", "-M", "--numstat", span, cwd=checkout))
+    deleted = parse_deleted(sh("git", "diff", "-z", "-M", "--name-status",
+                               "--diff-filter=DR", span, cwd=checkout))
+    return rows, deleted
+
+
+def classify(rows, deleted):
+    """Return (tier, lines, files, escalations) for parse_numstat rows.
+
+    Size uses the destination path; escalation checks every path.
+    """
     lines = files = 0
     paths = []
-    for row in numstat.splitlines():
-        added, removed, path = row.split("\t", 2)
-        paths.append(path)
-        if IGNORED.search(path) or TEST.search(path):
+    for added, removed, names in rows:
+        paths += names
+        if IGNORED.search(names[-1]) or TEST.search(names[-1]):
             continue
         files += 1
         if added != "-":
@@ -168,6 +212,37 @@ def conclude(review, tier, escalations, run):
     return render(run["verdict"], tier, escalations, review)
 
 
+def format_checks(runs, statuses):
+    """Summarize check runs and commit statuses as "name: result"."""
+    results = [f"{r['name']}: {r['conclusion'] or r['status']}" for r in runs]
+    results += [f"{st['context']}: {st['state']}" for st in statuses]
+    return ", ".join(results) or "none"
+
+
+def ci_result(repo, head):
+    """Read CI for the pinned head, not whatever the PR points at now."""
+    def pages(path, key):
+        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}",
+                 "--jq", f".{key}[]")
+        return [json.loads(line) for line in out.splitlines()]
+    return format_checks(pages("check-runs", "check_runs"), pages("status", "statuses"))
+
+
+@contextmanager
+def recorded(out, run):
+    """Write run.json when the block ends, with the error if it failed."""
+    started = time.time()
+    try:
+        yield
+        run.setdefault("status", "ok")
+    except BaseException as e:
+        run.update(status="failed", error=f"{type(e).__name__}: {e}"[:500])
+        raise
+    finally:
+        run["seconds"] = round(time.time() - started)
+        (out / "run.json").write_text(json.dumps(run, indent=2))
+
+
 def run_reviewer(reviewer, checkout, prompt, out):
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
@@ -231,43 +306,41 @@ def main():
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 
-    # --no-renames lists both sides of a rename, so a risky path cannot hide.
-    numstat = sh("git", "diff", "--no-renames", "--numstat", f"{base}..{head}", cwd=args.checkout)
-    deleted = sh("git", "diff", "--no-renames", "--name-only", "--diff-filter=D",
-                 f"{base}..{head}", cwd=args.checkout).split()
-    tier, lines, files, escalations = classify(numstat, deleted)
+    # From here on the run directory exists, so every exit leaves a run.json.
+    run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head}
+    with recorded(out, run):
+        tier, lines, files, escalations = classify(*diff_stats(args.checkout, base, head))
+        run.update(
+            prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
+            tier=tier, lines=lines, files=files, escalations=escalations,
+        )
+        if args.dry_run:
+            print(json.dumps(run, indent=2))
+            run["status"] = "dry-run"
+        finish(args, pr, issue, base, head, out, run)
 
-    run = {
-        "reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head,
-        "prompt_version": sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
-        "tier": tier, "lines": lines, "files": files, "escalations": escalations,
-    }
-    if args.dry_run:
-        print(json.dumps(run, indent=2))
 
+def finish(args, pr, issue, base, head, out, run):
+    """Write the prompt, run the model, and write the comment."""
+    tier, escalations = run["tier"], run["escalations"]
     if tier == "L":
         if args.dry_run:
             return
         verdict = "Changes needed"
         run.update(verdict=verdict, findings={})
         (out / "comment.md").write_text(
-            f"**Verdict:** {verdict}\n\nToo large to review: {lines} changed lines in "
-            f"{files} files. Split into PRs of at most {MEDIUM_LINES} lines and "
+            f"**Verdict:** {verdict}\n\nToo large to review: {run['lines']} changed lines in "
+            f"{run['files']} files. Split into PRs of at most {MEDIUM_LINES} lines and "
             f"{MEDIUM_FILES} files. Tests, lockfiles, and generated files do not count.\n"
         )
-        (out / "run.json").write_text(json.dumps(run, indent=2))
         print(out / "comment.md")
         return
 
-    # gh exits non-zero while checks are pending or failing, or if none exist.
-    result = subprocess.run(["gh", "pr", "checks", str(args.pr), "-R", args.repo,
-                             "--json", "name,state"], capture_output=True, text=True)
-    checks = json.loads(result.stdout) if result.stdout.strip() else []
     values = {
         "REPO": args.repo, "PR": str(args.pr), "BASE_SHA": base, "HEAD_SHA": head,
         "DIFF_PATH": str(out / "diff.patch"), "TIER": tier,
         "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
-        "CI_RESULT": ", ".join(f"{c['name']}: {c['state']}" for c in checks) or "none",
+        "CI_RESULT": ci_result(args.repo, head),
         "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
                          "--json", "body", "--jq", ".body").strip(),
         "PR_BODY": pr["body"].strip(),
@@ -279,13 +352,10 @@ def main():
     if args.dry_run:
         return
 
-    started = time.time()
     review = validate(run_reviewer(args.reviewer, args.checkout, prompt, out))
-    run["seconds"] = round(time.time() - started)
     comment = conclude(review, tier, escalations, run)
     (out / "review.json").write_text(json.dumps(review, indent=2))
     (out / "comment.md").write_text(comment)
-    (out / "run.json").write_text(json.dumps(run, indent=2))
     print(out / "comment.md")
 
 
