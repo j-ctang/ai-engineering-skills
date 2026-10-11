@@ -1,10 +1,17 @@
+import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from review_pr import classify, conclude, downgrade, render, validate
+import review_pr
+from review_pr import (classify, conclude, diff_stats, downgrade, format_checks, render,
+                       review, validate)
 
 
 def numstat(*rows):
-    return "\n".join(f"{a}\t{r}\t{p}" for a, r, p in rows)
+    return [(str(a), str(r), (p,)) for a, r, p in rows]
 
 
 class ClassifyTest(unittest.TestCase):
@@ -55,9 +62,8 @@ class ClassifyTest(unittest.TestCase):
                 self.assertIn(reason, hits)
 
     def test_rename_sides_both_checked(self):
-        # With --no-renames, a moved file shows as a delete plus an add.
-        rows = [(0, 10, "AGENTS.md"), (10, 0, "docs/rules.md")]
-        self.assertIn("agent-rules", classify(numstat(*rows), [])[3])
+        rows = [("0", "0", ("AGENTS.md", "docs/rules.md"))]
+        self.assertIn("agent-rules", classify(rows, [])[3])
 
     def test_deleted_test_escalates(self):
         hits = classify(numstat((0, 30, "test/a.test.ts")), ["test/a.test.ts"])[3]
@@ -74,6 +80,97 @@ def finding(severity, check="correctness", category=None):
 def checks(**fails):
     names = ["scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"]
     return {n: fails.get(n, "pass") for n in names}
+
+
+class GitDiffTest(unittest.TestCase):
+    """Run diff_stats against a real repo, so git's output format is covered."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.repo = Path(self.dir.name)
+        self.git("init", "-q")
+        self.write("test/a.test.ts", "x\n" * 20)
+        self.write("src/big.ts", "".join(f"line {i}\n" for i in range(400)))
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args],
+                              cwd=self.repo, check=True, capture_output=True, text=True).stdout
+
+    def write(self, path, text):
+        (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / path).write_text(text)
+
+    def commit(self):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        return self.git("rev-parse", "HEAD").strip()
+
+    def test_quoted_path_still_escalates(self):
+        self.write(".github/workflows/ci \u00e4.yml", "a\n")
+        head = self.commit()
+        tier, _, _, hits = classify(*diff_stats(self.repo, self.base, head))
+        self.assertEqual((tier, hits), ("M+", ["ci"]))
+
+    def test_pure_move_counts_no_lines(self):
+        self.git("mv", "src/big.ts", "src/moved.ts")
+        head = self.commit()
+        self.assertEqual(classify(*diff_stats(self.repo, self.base, head))[:3], ("S", 0, 1))
+
+    def test_test_moved_out_of_tests_counts_as_deleted(self):
+        self.git("mv", "test/a.test.ts", "src/a.ts")
+        head = self.commit()
+        self.assertIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
+
+    def test_test_moved_between_test_paths_is_not_deleted(self):
+        (self.repo / "tests").mkdir()
+        self.git("mv", "test/a.test.ts", "tests/a.test.ts")
+        head = self.commit()
+        self.assertNotIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
+
+
+class CiTest(unittest.TestCase):
+    def test_format_checks(self):
+        runs = [{"name": "offline-check", "status": "completed", "conclusion": "success"},
+                {"name": "lint", "status": "in_progress", "conclusion": None}]
+        self.assertEqual(format_checks(runs), "offline-check: success, lint: in_progress")
+        self.assertEqual(format_checks([]), "none")
+
+    def test_reads_pinned_head(self):
+        with mock.patch.object(review_pr, "gh_json", return_value={"check_runs": []}) as gh:
+            review_pr.ci_result("o/r", "abc123")
+        self.assertIn("repos/o/r/commits/abc123/check-runs", gh.call_args.args[1])
+
+
+class ReviewRunTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.out = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_failed_run_keeps_record(self):
+        run = {"pr": 1}
+        with mock.patch.object(review_pr, "run_reviewer", side_effect=ValueError("bad JSON")):
+            with self.assertRaises(ValueError):
+                review("codex", self.out, "prompt", self.out, run, "S", [])
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["error"], "ValueError: bad JSON")
+
+    def test_good_run_records_ok(self):
+        result = {"checks": checks(), "findings": [], "follow_ups": []}
+        with mock.patch.object(review_pr, "run_reviewer", return_value=result):
+            path = review("codex", self.out, "prompt", self.out, {}, "S", [])
+        record = json.loads((self.out / "run.json").read_text())
+        self.assertEqual(record["status"], "ok")
+        self.assertIn("Ready to merge", path.read_text())
 
 
 class ValidateTest(unittest.TestCase):
@@ -103,7 +200,6 @@ class ValidateTest(unittest.TestCase):
         review = validate({"checks": checks(), "findings": [finding("nit")] * 5,
                            "follow_ups": []})
         self.assertEqual(len(review["findings"]), 3)
-
 
     def test_unknown_category_rejected(self):
         bad = finding("blocker", category="style")
