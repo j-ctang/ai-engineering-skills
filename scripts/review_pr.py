@@ -5,7 +5,7 @@ Usage: scripts/review_pr.py <codex|claude> <owner/repo> <pr> <checkout-dir>
        [--dry-run]
 
 The script decides everything that can be decided mechanically: the pinned
-commit, the output shape, and the verdict. The model only
+commit, the review tier, the output shape, and the verdict. The model only
 reports findings. Each run gets its own directory under /tmp/review/ with
 diff.patch, prompt.md, review.json, comment.md, and run.json. Posting the
 comment is a separate, deliberate step:
@@ -24,10 +24,44 @@ HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
 SCHEMA = HERE / "prompts" / "review-schema.json"
 
+# Files that do not count toward review size.
+IGNORED = re.compile(
+    r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]+\.lock)$"
+    r"|(^|/)(dist|build|coverage)/|\.min\.js$|\.snap$"
+)
+# Tests do not count toward size either, so a PR never drops tests to fit.
+TEST = re.compile(r"(^|/)(test|tests|__tests__)/|(^|/)test_[^/]+$|\.(test|spec)\.[^/]+$")
+
+# Paths that raise the tier, whatever the size.
+ESCALATIONS = {
+    "ci": r"^\.github/workflows/",
+    "agent-rules": r"(^|/)(AGENTS|CLAUDE)\.md$",
+    "dependencies": r"(^|/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]+\.lock)$",
+    "test-gates": (r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
+                   r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"),
+    "secrets": r"(auth|credential|secret|token|\.env)",
+}
+
+SMALL_LINES, SMALL_FILES = 50, 3
+MEDIUM_LINES, MEDIUM_FILES = 300, 10
 MAX_NITS = 3
 CHECKS = {"scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_hygiene"}
 SEVERITIES = ["blocker", "should-fix", "nit"]
 FIELDS = {"check", "severity", "path", "line", "problem", "failure_scenario", "fix"}
+
+TIER_INSTRUCTIONS = {
+    "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
+    "M": (
+        "Medium diff. Review one file at a time. For each changed source file, "
+        "read its tests and its callers before judging correctness."
+    ),
+    "M+": (
+        "Medium diff with risky paths ({escalations}). Review one file at a "
+        "time, read tests and callers, then do a separate safety pass over the "
+        "risky paths: secrets, permissions, network access, dependency pinning, "
+        "and any weakened check or gate."
+    ),
+}
 
 
 def sh(*args, cwd=None):
@@ -36,6 +70,31 @@ def sh(*args, cwd=None):
 
 def gh_json(*args):
     return json.loads(sh("gh", *args))
+
+
+def classify(numstat, deleted):
+    """Return (tier, lines, files, escalations) for a --no-renames numstat."""
+    lines = files = 0
+    paths = []
+    for row in numstat.splitlines():
+        added, removed, path = row.split("\t", 2)
+        paths.append(path)
+        if IGNORED.search(path) or TEST.search(path):
+            continue
+        files += 1
+        if added != "-":
+            lines += int(added) + int(removed)
+    hits = sorted(
+        name for name, pattern in ESCALATIONS.items()
+        if any(re.search(pattern, p, re.I) for p in paths)
+    )
+    if any(TEST.search(p) for p in deleted):
+        hits.append("deleted-tests")
+    if lines > MEDIUM_LINES or files > MEDIUM_FILES:
+        return "L", lines, files, hits
+    if lines <= SMALL_LINES and files <= SMALL_FILES and not hits:
+        return "S", lines, files, hits
+    return ("M+" if hits else "M"), lines, files, hits
 
 
 def validate(review):
@@ -61,8 +120,10 @@ def validate(review):
     return review
 
 
-def render(verdict, review):
+def render(verdict, tier, escalations, review):
     out = [f"**Verdict:** {verdict}", ""]
+    label = tier + (f" ({', '.join(escalations)})" if escalations else "")
+    out += [f"Review tier: {label}", ""]
     findings = sorted(
         review["findings"],
         key=lambda f: SEVERITIES.index(f["severity"]),
@@ -140,10 +201,33 @@ def main():
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 
+    # --no-renames lists both sides of a rename, so a risky path cannot hide.
+    numstat = sh("git", "diff", "--no-renames", "--numstat", f"{base}..{head}", cwd=args.checkout)
+    deleted = sh("git", "diff", "--no-renames", "--name-only", "--diff-filter=D",
+                 f"{base}..{head}", cwd=args.checkout).split()
+    tier, lines, files, escalations = classify(numstat, deleted)
+
     run = {
         "reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head,
         "prompt_version": sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
+        "tier": tier, "lines": lines, "files": files, "escalations": escalations,
     }
+    if args.dry_run:
+        print(json.dumps(run, indent=2))
+
+    if tier == "L":
+        if args.dry_run:
+            return
+        verdict = "Changes needed"
+        run.update(verdict=verdict, findings={})
+        (out / "comment.md").write_text(
+            f"**Verdict:** {verdict}\n\nToo large to review: {lines} changed lines in "
+            f"{files} files. Split into PRs of at most {MEDIUM_LINES} lines and "
+            f"{MEDIUM_FILES} files. Tests, lockfiles, and generated files do not count.\n"
+        )
+        (out / "run.json").write_text(json.dumps(run, indent=2))
+        print(out / "comment.md")
+        return
 
     # gh exits non-zero while checks are pending or failing, or if none exist.
     result = subprocess.run(["gh", "pr", "checks", str(args.pr), "-R", args.repo,
@@ -151,7 +235,8 @@ def main():
     checks = json.loads(result.stdout) if result.stdout.strip() else []
     values = {
         "REPO": args.repo, "PR": str(args.pr), "BASE_SHA": base, "HEAD_SHA": head,
-        "DIFF_PATH": str(out / "diff.patch"),
+        "DIFF_PATH": str(out / "diff.patch"), "TIER": tier,
+        "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
         "CI_RESULT": ", ".join(f"{c['name']}: {c['state']}" for c in checks) or "none",
         "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
                          "--json", "body", "--jq", ".body").strip(),
@@ -162,7 +247,6 @@ def main():
         prompt = prompt.replace("{{" + key + "}}", value)
     (out / "prompt.md").write_text(prompt)
     if args.dry_run:
-        print(json.dumps(run, indent=2))
         return
 
     started = time.time()
@@ -170,7 +254,7 @@ def main():
     run["seconds"] = round(time.time() - started)
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
     verdict = "Changes needed" if blockers else "Ready to merge"
-    comment = render(verdict, review)
+    comment = render(verdict, tier, escalations, review)
 
     run["verdict"] = verdict
     run["findings"] = {s: sum(f["severity"] == s for f in review["findings"])
