@@ -12,9 +12,15 @@ commit. Read any repo file you need for context. Do not change files, commit,
 push, or post anything.
 
 CONTEXT
+- Review tier: {{TIER}}. The script sets the tier from diff size and risky
+  paths. Follow the tier instructions below exactly.
 - The repo's `AGENTS.md` defines risk labels, protected paths, and writing
   rules.
 - Hosted CI result for the head commit: {{CI_RESULT}}.
+
+<tier_instructions>
+{{TIER_INSTRUCTIONS}}
+</tier_instructions>
 
 <issue>
 {{ISSUE_BODY}}
