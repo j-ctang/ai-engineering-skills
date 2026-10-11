@@ -1,6 +1,67 @@
 import unittest
 
-from review_pr import render, validate
+from review_pr import classify, render, validate
+
+
+def numstat(*rows):
+    return "\n".join(f"{a}\t{r}\t{p}" for a, r, p in rows)
+
+
+class ClassifyTest(unittest.TestCase):
+    def test_small(self):
+        self.assertEqual(classify(numstat((10, 5, "src/a.ts")), []), ("S", 15, 1, []))
+
+    def test_medium_by_lines(self):
+        self.assertEqual(classify(numstat((40, 20, "src/a.ts")), [])[0], "M")
+
+    def test_medium_by_files(self):
+        rows = [(1, 0, f"src/{i}.ts") for i in range(4)]
+        self.assertEqual(classify(numstat(*rows), [])[0], "M")
+
+    def test_large_by_lines(self):
+        self.assertEqual(classify(numstat((301, 0, "src/a.ts")), [])[0], "L")
+
+    def test_large_by_files(self):
+        rows = [(1, 0, f"src/{i}.ts") for i in range(11)]
+        self.assertEqual(classify(numstat(*rows), [])[0], "L")
+
+    def test_lockfile_ignored_for_size_but_escalates(self):
+        tier, lines, files, hits = classify(
+            numstat((5, 0, "src/a.ts"), (900, 800, "package-lock.json")), [])
+        self.assertEqual((tier, lines, files, hits), ("M+", 5, 1, ["dependencies"]))
+
+    def test_tests_excluded_from_size(self):
+        rows = [(40, 0, "src/a.ts"), (200, 0, "test/a.test.ts"), (90, 0, "scripts/test_x.py")]
+        self.assertEqual(classify(numstat(*rows), [])[:3], ("S", 40, 1))
+
+    def test_binary_counts_as_file(self):
+        self.assertEqual(classify(numstat(("-", "-", "img.png")), [])[:3], ("S", 0, 1))
+
+    def test_escalations(self):
+        cases = {
+            ".github/workflows/ci.yml": "ci",
+            "AGENTS.md": "agent-rules",
+            "package.json": "dependencies",
+            "jest.config.js": "test-gates",
+            "tsconfig.build.json": "test-gates",
+            "scripts/check.sh": "test-gates",
+            "src/auth/session.ts": "secrets",
+            ".env.example": "secrets",
+        }
+        for path, reason in cases.items():
+            with self.subTest(path=path):
+                tier, _, _, hits = classify(numstat((3, 1, path)), [])
+                self.assertEqual(tier, "M+")
+                self.assertIn(reason, hits)
+
+    def test_rename_sides_both_checked(self):
+        # With --no-renames, a moved file shows as a delete plus an add.
+        rows = [(0, 10, "AGENTS.md"), (10, 0, "docs/rules.md")]
+        self.assertIn("agent-rules", classify(numstat(*rows), [])[3])
+
+    def test_deleted_test_escalates(self):
+        hits = classify(numstat((0, 30, "test/a.test.ts")), ["test/a.test.ts"])[3]
+        self.assertIn("deleted-tests", hits)
 
 
 def finding(severity, check="correctness"):
@@ -44,13 +105,14 @@ class ValidateTest(unittest.TestCase):
 
 class RenderTest(unittest.TestCase):
     def test_no_findings(self):
-        text = render("Ready to merge", {"findings": [], "follow_ups": []})
+        text = render("Ready to merge", "S", [], {"findings": [], "follow_ups": []})
         self.assertIn("No blocking findings.", text)
 
-    def test_blockers_first(self):
-        text = render("Changes needed",
+    def test_blockers_first_and_tier_label(self):
+        text = render("Changes needed", "M+", ["ci"],
                       {"findings": [finding("nit"), finding("blocker")], "follow_ups": ["Later."]})
         self.assertLess(text.index("blocker"), text.index("nit"))
+        self.assertIn("Review tier: M+ (ci)", text)
         self.assertIn("Follow-ups", text)
 
 
