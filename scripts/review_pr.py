@@ -109,17 +109,14 @@ def parse_numstat(raw):
 def parse_deleted(raw):
     """Parse `git diff -z -M --name-status --diff-filter=DR` into removed paths.
 
-    A rename counts as a deletion of its source when it moves a test out of
-    the test paths, so a test cannot vanish by being renamed.
+    A rename keeps the file's content, so it is a move, not a deletion.
     """
     removed, tokens = [], iter(raw.split("\0"))
     for status in tokens:
         if status.startswith("D"):
             removed.append(next(tokens))
         elif status.startswith("R"):
-            source, dest = next(tokens), next(tokens)
-            if not TEST.search(dest):
-                removed.append(source)
+            next(tokens), next(tokens)
     return removed
 
 

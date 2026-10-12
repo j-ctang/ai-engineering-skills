@@ -123,10 +123,10 @@ class GitDiffTest(unittest.TestCase):
         head = self.commit()
         self.assertEqual(classify(*diff_stats(self.repo, self.base, head))[:3], ("S", 0, 1))
 
-    def test_test_moved_out_of_tests_counts_as_deleted(self):
+    def test_renamed_test_is_a_move(self):
         self.git("mv", "test/a.test.ts", "src/a.ts")
         head = self.commit()
-        self.assertIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
+        self.assertNotIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
 
     def test_ancestor_check(self):
         head = self.commit_change("src/new.ts")
