@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit is advisory only. Its findings never gate a merge.
+reviews:
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
