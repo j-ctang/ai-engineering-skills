@@ -71,10 +71,10 @@ class ClassifyTest(unittest.TestCase):
         self.assertIn("deleted-tests", hits)
 
 
-def finding(severity, check="correctness", category=None):
+def finding(severity, check="correctness", category=None, path="a.ts"):
     if category is None:
         category = "wrong-behavior" if severity == "blocker" else "none"
-    return {"check": check, "severity": severity, "category": category, "path": "a.ts",
+    return {"check": check, "severity": severity, "category": category, "path": path,
             "line": 1, "problem": "P.", "failure_scenario": "F.", "fix": "X."}
 
 
@@ -284,10 +284,32 @@ class DowngradeTest(unittest.TestCase):
     def test_categorized_blockers_kept(self):
         review = {"checks": checks(safety="fail", tests="fail"),
                   "findings": [finding("blocker", "safety", "security"),
-                               finding("blocker", "tests", "weakened-gate")],
+                               finding("blocker", "tests", "weakened-gate", "test/a.test.ts")],
                   "follow_ups": []}
         self.assertEqual(downgrade(validate(review)), 0)
         self.assertEqual([f["severity"] for f in review["findings"]], ["blocker"] * 2)
+
+    def test_category_that_does_not_fit_check_downgraded(self):
+        review = {"checks": checks(docs="fail", pr_hygiene="fail", scope="fail"),
+                  "findings": [finding("blocker", "docs", "wrong-behavior"),
+                               finding("blocker", "pr_hygiene", "unmet-acceptance"),
+                               finding("blocker", "scope", "security")],
+                  "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 3)
+        self.assertEqual(set(review["checks"].values()), {"pass"})
+
+    def test_weakened_gate_outside_gate_paths_downgraded(self):
+        review = {"checks": checks(tests="fail"),
+                  "findings": [finding("blocker", "tests", "weakened-gate", "src/a.ts")],
+                  "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 1)
+
+    def test_weakened_gate_on_gate_paths_kept(self):
+        paths = ["scripts/test_a.py", ".github/workflows/ci.yml", "jest.config.js", "AGENTS.md"]
+        review = {"checks": checks(safety="fail"),
+                  "findings": [finding("blocker", "safety", "weakened-gate", p) for p in paths],
+                  "follow_ups": []}
+        self.assertEqual(downgrade(validate(review)), 0)
 
 
 class ConcludeTest(unittest.TestCase):

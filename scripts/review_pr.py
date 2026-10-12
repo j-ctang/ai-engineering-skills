@@ -55,6 +55,16 @@ CHECKS = {"scope", "acceptance", "correctness", "tests", "safety", "docs", "pr_h
 SEVERITIES = ["blocker", "should-fix", "nit"]
 # A blocker must name one of these reasons, or the script downgrades it.
 CATEGORIES = {"wrong-behavior", "security", "weakened-gate", "unmet-acceptance", "none"}
+# The checks each blocking reason can come from. A weakened gate must also
+# sit on a test, CI, gate config, or agent rules path.
+FITS = {
+    "wrong-behavior": {"correctness", "acceptance", "tests"},
+    "security": {"safety", "correctness"},
+    "weakened-gate": {"tests", "safety"},
+    "unmet-acceptance": {"acceptance", "tests"},
+}
+GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.I)
+                        for k in ("ci", "test-gates", "agent-rules")]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
 
@@ -187,11 +197,19 @@ def sync_checks(review):
             review["checks"][check] = "pass"
 
 
+def fits(f):
+    """Whether a blocker's category fits its check and, for a gate, its path."""
+    if f["check"] not in FITS.get(f["category"], ()):
+        return False
+    return f["category"] != "weakened-gate" or any(p.search(f["path"]) for p in GATE_PATHS)
+
+
 def downgrade(review):
-    """Turn blockers with no blocking reason into should-fix. Return the count."""
+    """Turn blockers whose reason is missing or does not fit into should-fix.
+    Return the count."""
     count = 0
     for f in review["findings"]:
-        if f["severity"] == "blocker" and f["category"] == "none":
+        if f["severity"] == "blocker" and not fits(f):
             f["severity"] = "should-fix"
             count += 1
     sync_checks(review)

@@ -51,6 +51,11 @@ Severity:
   unmet acceptance criterion. Set `category` to the reason:
   `wrong-behavior` (includes data loss), `security`, `weakened-gate`, or
   `unmet-acceptance`. A blocker with category `none` becomes should-fix.
+  So does a blocker whose category does not fit its check:
+  `wrong-behavior` fits correctness, acceptance, or tests; `security` fits
+  safety or correctness; `unmet-acceptance` fits acceptance or tests;
+  `weakened-gate` fits tests or safety, on a test, CI, gate config, or
+  agent rules file.
 - should-fix: a real problem that does not block merging.
 - nit: a small clarity fix. Report at most three.
 Should-fix and nit findings use category `none` unless one of the reasons
