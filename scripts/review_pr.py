@@ -12,7 +12,8 @@ comment is a separate, deliberate step:
 gh pr comment <pr> -R <repo> -F <run-dir>/comment.md
 
 A follow-up review (--since) reads only the commits after the earlier run's
-head. The model marks each earlier finding fixed or open and reports new
+head. If the branch merged its base branch since then, the base branch's
+changes are left out. The model marks each earlier finding fixed or open and reports new
 findings in the new commits only.
 """
 
@@ -225,6 +226,24 @@ def is_ancestor(checkout, old, new):
                           capture_output=True).returncode == 0
 
 
+def follow_up_base(checkout, target, earlier, head):
+    """Return the tree or commit a follow-up diff starts from.
+
+    If the branch merged the base branch after the earlier review, replay the
+    earlier head onto the new merge base, so the diff leaves out the base
+    branch's changes.
+    """
+    merge_base = sh("git", "merge-base", target, head, cwd=checkout).strip()
+    if is_ancestor(checkout, merge_base, earlier):
+        return earlier
+    replay = subprocess.run(["git", "merge-tree", "--write-tree", earlier, merge_base],
+                            cwd=checkout, capture_output=True, text=True)
+    if replay.returncode != 0:
+        raise ValueError(f"earlier head {earlier} conflicts with the merged base branch; "
+                         "review the full PR")
+    return replay.stdout.split("\n", 1)[0]
+
+
 def earlier_block(findings, head):
     """Describe the earlier findings for the follow-up prompt."""
     lines = [f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
@@ -395,9 +414,15 @@ def main():
             earlier = load_earlier(args.since, args.repo, args.pr)
         except (OSError, ValueError) as e:
             sys.exit(str(e))
-        base = earlier[0]["head"]
-        if not is_ancestor(args.checkout, base, head):
-            sys.exit(f"earlier head {base} is not an ancestor of {head}; review the full PR")
+        earlier_head = earlier[0]["head"]
+        if not is_ancestor(args.checkout, earlier_head, head):
+            sys.exit(f"earlier head {earlier_head} is not an ancestor of {head}; "
+                     "review the full PR")
+        try:
+            base = follow_up_base(args.checkout, f"origin/{pr['baseRefName']}",
+                                  earlier_head, head)
+        except ValueError as e:
+            sys.exit(str(e))
 
     diff = sh("git", "diff", f"{base}..{head}", cwd=args.checkout)
     if not diff.strip():
@@ -457,7 +482,7 @@ def finish(args, pr, issue, base, head, out, run, earlier, changed):
         "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
                          "--json", "body", "--jq", ".body").strip(),
         "PR_BODY": pr["body"].strip(),
-        "EARLIER": earlier_block(earlier[1], base) if earlier else "",
+        "EARLIER": earlier_block(earlier[1], earlier[0]["head"]) if earlier else "",
     }
     prompt = PROMPT.read_text()
     for key, value in values.items():
