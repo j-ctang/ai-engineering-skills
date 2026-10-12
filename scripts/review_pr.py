@@ -2,12 +2,13 @@
 """Run an independent, read-only PR review with Codex or Claude.
 
 Usage: scripts/review_pr.py <codex|claude> <owner/repo> <pr> <checkout-dir>
-       [--since <earlier-run-dir>] [--dry-run]
+       [--since <earlier-run-dir>] [--out-dir <dir>] [--dry-run]
 
 The script decides everything that can be decided mechanically: the pinned
 commit, the review tier, the output shape, and the verdict. The model only
-reports findings. Each run gets its own directory under /tmp/review/ with
-diff.patch, prompt.md, review.json, comment.md, and run.json. Posting the
+reports findings. Each run gets its own directory under --out-dir (default
+/tmp/review/) with diff.patch, prompt.md, review.json, comment.md, and
+run.json. Posting the
 comment is a separate, deliberate step:
 gh pr comment <pr> -R <repo> -F <run-dir>/comment.md
 
@@ -403,6 +404,8 @@ def main():
     ap.add_argument("pr", type=int)
     ap.add_argument("checkout", type=Path)
     ap.add_argument("--since", type=Path, help="earlier run directory; review only newer commits")
+    ap.add_argument("--out-dir", type=Path, default=Path("/tmp/review"),
+                    help="root for run directories")
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
     args = ap.parse_args()
 
@@ -448,7 +451,7 @@ def main():
 
     # One directory per run, so reruns and other repos never overwrite a record.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = Path("/tmp/review") / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
+    out = run_dir(args.out_dir, args.repo, args.pr, head, stamp)
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 
@@ -466,6 +469,11 @@ def main():
             print(json.dumps(run, indent=2))
             run["status"] = "dry-run"
         finish(args, pr, issue, base, head, out, run, earlier, changed)
+
+
+def run_dir(root, repo, pr, head, stamp):
+    """Name one run's directory under root."""
+    return root / f"{repo.replace('/', '-')}-{pr}-{head[:7]}-{stamp}"
 
 
 def new_record(args, head, earlier):

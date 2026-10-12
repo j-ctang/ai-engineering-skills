@@ -8,7 +8,7 @@ from unittest import mock
 import review_pr
 from review_pr import (assess_follow_up, classify, conclude, diff_stats, downgrade, earlier_block,
                        follow_up_base, format_checks, is_ancestor, load_earlier, new_record, recheck,
-                       recheck_schema, recorded, render, validate)
+                       recheck_schema, recorded, render, run_dir, validate)
 
 
 def numstat(*rows):
@@ -183,6 +183,12 @@ class GitDiffTest(unittest.TestCase):
         self.git("mv", "test/a.test.ts", "tests/a.test.ts")
         head = self.commit()
         self.assertNotIn("deleted-tests", classify(*diff_stats(self.repo, self.base, head))[3])
+
+
+class RunDirTest(unittest.TestCase):
+    def test_named_under_root(self):
+        self.assertEqual(run_dir(Path("/tmp/review"), "o/r", 7, "abcdef123", "s"),
+                         Path("/tmp/review/o-r-7-abcdef1-s"))
 
 
 class CiTest(unittest.TestCase):
