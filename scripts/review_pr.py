@@ -34,6 +34,7 @@ SCHEMA = HERE / "prompts" / "review-schema.json"
 IGNORED = re.compile(
     r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]+\.lock)$"
     r"|(^|/)(dist|build|coverage)/|\.min\.js$|\.snap$"
+    r"|(^|/)vendor"
 )
 # Tests do not count toward size either, so a PR never drops tests to fit.
 TEST = re.compile(r"(^|/)(test|tests|__tests__)/|(^|/)test_[^/]+$|\.(test|spec)\.[^/]+$")

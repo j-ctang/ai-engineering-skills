@@ -38,6 +38,11 @@ class ClassifyTest(unittest.TestCase):
             numstat((5, 0, "src/a.ts"), (900, 800, "package-lock.json")), [])
         self.assertEqual((tier, lines, files, hits), ("M+", 5, 1, ["dependencies"]))
 
+    def test_vendored_ignored_for_size(self):
+        tier, lines, files, _ = classify(
+            numstat((5, 0, "src/a.ts"), (900, 0, "vendor/lib.js")), [])
+        self.assertEqual((tier, lines, files), ("S", 5, 1))
+
     def test_tests_excluded_from_size(self):
         rows = [(40, 0, "src/a.ts"), (200, 0, "test/a.test.ts"), (90, 0, "scripts/test_x.py")]
         self.assertEqual(classify(numstat(*rows), [])[:3], ("S", 40, 1))
