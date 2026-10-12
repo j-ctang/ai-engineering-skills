@@ -7,7 +7,7 @@ from unittest import mock
 
 import review_pr
 from review_pr import (assess_follow_up, classify, conclude, diff_stats, downgrade, earlier_block,
-                       format_checks, is_ancestor, load_earlier, new_record, recheck,
+                       follow_up_base, format_checks, is_ancestor, load_earlier, new_record, recheck,
                        recheck_schema, recorded, render, validate)
 
 
@@ -139,6 +139,44 @@ class GitDiffTest(unittest.TestCase):
     def commit_change(self, path):
         self.write(path, "a\n")
         return self.commit()
+
+    def branch_with_merged_main(self):
+        """Return (earlier, head): the PR merges main after the earlier review."""
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "pr")
+        earlier = self.commit_change("src/pr.ts")
+        self.git("checkout", "-q", "main")
+        self.commit_change("src/main_only.ts")
+        self.git("checkout", "-q", "pr")
+        self.git("merge", "-q", "--no-edit", "main")
+        self.write("src/pr.ts", "b\n")
+        return earlier, self.commit()
+
+    def test_follow_up_without_merge_starts_at_earlier_head(self):
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "pr")
+        earlier = self.commit_change("src/pr.ts")
+        head = self.commit_change("src/more.ts")
+        self.assertEqual(follow_up_base(self.repo, "main", earlier, head), earlier)
+
+    def test_follow_up_skips_merged_main_changes(self):
+        earlier, head = self.branch_with_merged_main()
+        base = follow_up_base(self.repo, "main", earlier, head)
+        rows, _ = diff_stats(self.repo, base, head)
+        self.assertEqual({p for _, _, names in rows for p in names}, {"src/pr.ts"})
+
+    def test_follow_up_conflicting_replay_rejected(self):
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "pr")
+        earlier = self.commit_change("src/same.ts")
+        self.git("checkout", "-q", "main")
+        self.write("src/same.ts", "main\n")
+        self.commit()
+        self.git("checkout", "-q", "pr")
+        self.git("merge", "-q", "-X", "ours", "--no-edit", "main")
+        head = self.commit_change("src/more.ts")
+        with self.assertRaises(ValueError):
+            follow_up_base(self.repo, "main", earlier, head)
 
     def test_test_moved_between_test_paths_is_not_deleted(self):
         (self.repo / "tests").mkdir()
