@@ -46,6 +46,8 @@ ESCALATIONS = {
     "test-gates": (r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
                    r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"),
     "secrets": r"(auth|credential|secret|token|\.env)",
+    # The reviewer's own rules: tiering, escalation, severity, and the prompt.
+    "review-gates": r"(^|/)(scripts/review_pr\.py|prompts/review-[^/]+)$",
 }
 
 SMALL_LINES, SMALL_FILES = 50, 3
@@ -64,7 +66,7 @@ FITS = {
     "unmet-acceptance": {"acceptance", "tests"},
 }
 GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.I)
-                        for k in ("ci", "test-gates", "agent-rules")]
+                        for k in ("ci", "test-gates", "agent-rules", "review-gates")]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
 

@@ -40,6 +40,7 @@ Work through these checks in this order. Give each one `pass`, `fail`, or
    agents who rely on these files.
 4. tests: new behavior has a test; a bug fix has a test that fails before
    and passes after; no test, check, or CI gate is weakened or removed.
+   A weakened gate is a blocker even when the issue asks for it.
 5. safety: no secrets, no new network access, no widened permissions, no
    unpinned dependencies.
 6. docs: every changed Markdown file is current as of the head commit.
@@ -54,8 +55,8 @@ Severity:
   So does a blocker whose category does not fit its check:
   `wrong-behavior` fits correctness, acceptance, or tests; `security` fits
   safety or correctness; `unmet-acceptance` fits acceptance or tests;
-  `weakened-gate` fits tests or safety, on a test, CI, gate config, or
-  agent rules file.
+  `weakened-gate` fits tests or safety, on a test, CI, gate config, agent
+  rules, or review rules file.
 - should-fix: a real problem that does not block merging.
 - nit: a small clarity fix. Report at most three.
 Should-fix and nit findings use category `none` unless one of the reasons
