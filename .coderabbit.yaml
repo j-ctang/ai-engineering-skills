@@ -1,6 +1,61 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit is advisory only. Its findings never gate a merge.
+# Review profile stays at the default (chill): it rates real defects
+# "Minor", and a quieter profile could hide them.
 reviews:
+  request_changes_workflow: false
+  high_level_summary: true
+  assess_linked_issues: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
   pre_merge_checks:
     docstrings:
       mode: "off"
+    issue_assessment:
+      mode: warning
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Report only concrete correctness, security, data-loss, weakened-gate,
+        or unmet-acceptance problems this PR introduces. For each, cite the
+        changed line, a reachable failure scenario, and the smallest fix.
+        Read callers and tests before claiming a defect. Skip style and
+        speculative hardening. A clean review is fine.
+    - path: "scripts/review_pr.py"
+      instructions: >-
+        This script is a review gate. Flag any change that weakens tiering,
+        escalation, deleted-test detection, schema validation, severity
+        downgrades, or verdict rules, even when the linked issue asks for it.
+        Also check pinned head and base commits, follow-up diff isolation,
+        and that review and dry-run never write to the checkout or post.
+    - path: "prompts/review-*"
+      instructions: >-
+        These files are the reviewer's rules. Flag wording that contradicts
+        review_pr.py or the schema, loosens a gate, or allows writes.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+  learnings:
+    scope: local
