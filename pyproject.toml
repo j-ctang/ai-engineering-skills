@@ -1,0 +1,6 @@
+[dependency-groups]
+dev = ["ruff==0.17.0"]
+
+[tool.ruff]
+line-length = 105
+target-version = "py313"

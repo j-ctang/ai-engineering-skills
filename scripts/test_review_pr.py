@@ -6,9 +6,24 @@ from pathlib import Path
 from unittest import mock
 
 import review_pr
-from review_pr import (assess_follow_up, classify, conclude, diff_stats, downgrade, earlier_block,
-                       follow_up_base, format_checks, is_ancestor, load_earlier, new_record, recheck,
-                       recheck_schema, recorded, render, validate)
+from review_pr import (
+    assess_follow_up,
+    classify,
+    conclude,
+    diff_stats,
+    downgrade,
+    earlier_block,
+    follow_up_base,
+    format_checks,
+    is_ancestor,
+    load_earlier,
+    new_record,
+    recheck,
+    recheck_schema,
+    recorded,
+    render,
+    validate,
+)
 
 
 def numstat(*rows):
@@ -35,7 +50,8 @@ class ClassifyTest(unittest.TestCase):
 
     def test_lockfile_ignored_for_size_but_escalates(self):
         tier, lines, files, hits = classify(
-            numstat((5, 0, "src/a.ts"), (900, 800, "package-lock.json")), [])
+            numstat((5, 0, "src/a.ts"), (900, 800, "package-lock.json")), []
+        )
         self.assertEqual((tier, lines, files, hits), ("M+", 5, 1, ["dependencies"]))
 
     def test_tests_excluded_from_size(self):
@@ -77,8 +93,16 @@ class ClassifyTest(unittest.TestCase):
 def finding(severity, check="correctness", category=None, path="a.ts"):
     if category is None:
         category = "wrong-behavior" if severity == "blocker" else "none"
-    return {"check": check, "severity": severity, "category": category, "path": path,
-            "line": 1, "problem": "P.", "failure_scenario": "F.", "fix": "X."}
+    return {
+        "check": check,
+        "severity": severity,
+        "category": category,
+        "path": path,
+        "line": 1,
+        "problem": "P.",
+        "failure_scenario": "F.",
+        "fix": "X.",
+    }
 
 
 def checks(**fails):
@@ -102,9 +126,13 @@ class GitDiffTest(unittest.TestCase):
         self.dir.cleanup()
 
     def git(self, *args):
-        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
-                               "-c", "commit.gpgsign=false", *args],
-                              cwd=self.repo, check=True, capture_output=True, text=True).stdout
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
 
     def write(self, path, text):
         (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
@@ -190,19 +218,23 @@ class GitDiffTest(unittest.TestCase):
 
 class CiTest(unittest.TestCase):
     def test_format_checks(self):
-        runs = [{"name": "offline-check", "status": "completed", "conclusion": "success"},
-                {"name": "lint", "status": "in_progress", "conclusion": None}]
+        runs = [
+            {"name": "offline-check", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "in_progress", "conclusion": None},
+        ]
         statuses = [{"context": "deploy", "state": "failure"}]
-        self.assertEqual(format_checks(runs, statuses),
-                         "offline-check: success, lint: in_progress, deploy: failure")
+        self.assertEqual(
+            format_checks(runs, statuses), "offline-check: success, lint: in_progress, deploy: failure"
+        )
         self.assertEqual(format_checks([], []), "none")
 
     def test_reads_pinned_head_on_every_page(self):
         with mock.patch.object(review_pr, "sh", return_value="") as sh:
             review_pr.ci_result("o/r", "abc123")
         urls = [c.args[3] for c in sh.call_args_list]
-        self.assertEqual(urls, ["repos/o/r/commits/abc123/check-runs",
-                                "repos/o/r/commits/abc123/status"])
+        self.assertEqual(
+            urls, ["repos/o/r/commits/abc123/check-runs", "repos/o/r/commits/abc123/status"]
+        )
         self.assertTrue(all("--paginate" in c.args for c in sh.call_args_list))
 
 
@@ -218,9 +250,8 @@ class RecordedTest(unittest.TestCase):
         return json.loads((self.out / "run.json").read_text())
 
     def test_failure_keeps_record(self):
-        with self.assertRaises(ValueError):
-            with recorded(self.out, {"pr": 1}):
-                raise ValueError("bad JSON")
+        with self.assertRaises(ValueError), recorded(self.out, {"pr": 1}):
+            raise ValueError("bad JSON")
         self.assertEqual(self.record()["status"], "failed")
         self.assertEqual(self.record()["error"], "ValueError: bad JSON")
 
@@ -241,14 +272,15 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(review["checks"]["tests"], "pass")
 
     def test_blocker_without_fail_fails_its_check(self):
-        review = validate({"checks": checks(), "findings": [finding("blocker")],
-                           "follow_ups": []})
+        review = validate({"checks": checks(), "findings": [finding("blocker")], "follow_ups": []})
         self.assertEqual(review["checks"]["correctness"], "fail")
 
     def test_related_check_failed_without_its_own_blocker(self):
-        review = {"checks": checks(acceptance="fail", correctness="fail"),
-                  "findings": [finding("blocker", "acceptance", "unmet-acceptance")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(acceptance="fail", correctness="fail"),
+            "findings": [finding("blocker", "acceptance", "unmet-acceptance")],
+            "follow_ups": [],
+        }
         run = {}
         conclude(validate(review), "M+", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
@@ -270,8 +302,7 @@ class ValidateTest(unittest.TestCase):
             validate({"checks": checks(), "findings": [bad], "follow_ups": []})
 
     def test_nits_capped(self):
-        review = validate({"checks": checks(), "findings": [finding("nit")] * 5,
-                           "follow_ups": []})
+        review = validate({"checks": checks(), "findings": [finding("nit")] * 5, "follow_ups": []})
         self.assertEqual(len(review["findings"]), 3)
 
     def test_unknown_category_rejected(self):
@@ -282,56 +313,81 @@ class ValidateTest(unittest.TestCase):
 
 class DowngradeTest(unittest.TestCase):
     def test_blocker_without_category_downgraded(self):
-        review = {"checks": checks(correctness="fail"),
-                  "findings": [finding("blocker", category="none")], "follow_ups": []}
+        review = {
+            "checks": checks(correctness="fail"),
+            "findings": [finding("blocker", category="none")],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 1)
         self.assertEqual(review["findings"][0]["severity"], "should-fix")
         self.assertEqual(review["checks"]["correctness"], "pass")
 
     def test_check_with_real_blocker_stays_failed(self):
-        review = {"checks": checks(correctness="fail"),
-                  "findings": [finding("blocker", category="none"), finding("blocker")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(correctness="fail"),
+            "findings": [finding("blocker", category="none"), finding("blocker")],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 1)
         self.assertEqual(review["checks"]["correctness"], "fail")
 
     def test_categorized_blockers_kept(self):
-        review = {"checks": checks(safety="fail", tests="fail"),
-                  "findings": [finding("blocker", "safety", "security"),
-                               finding("blocker", "tests", "weakened-gate", "test/a.test.ts")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(safety="fail", tests="fail"),
+            "findings": [
+                finding("blocker", "safety", "security"),
+                finding("blocker", "tests", "weakened-gate", "test/a.test.ts"),
+            ],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 0)
         self.assertEqual([f["severity"] for f in review["findings"]], ["blocker"] * 2)
 
     def test_category_that_does_not_fit_check_downgraded(self):
-        review = {"checks": checks(docs="fail", pr_hygiene="fail", scope="fail"),
-                  "findings": [finding("blocker", "docs", "wrong-behavior"),
-                               finding("blocker", "pr_hygiene", "unmet-acceptance"),
-                               finding("blocker", "scope", "security")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(docs="fail", pr_hygiene="fail", scope="fail"),
+            "findings": [
+                finding("blocker", "docs", "wrong-behavior"),
+                finding("blocker", "pr_hygiene", "unmet-acceptance"),
+                finding("blocker", "scope", "security"),
+            ],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 3)
         self.assertEqual(set(review["checks"].values()), {"pass"})
 
     def test_weakened_gate_outside_gate_paths_downgraded(self):
-        review = {"checks": checks(tests="fail"),
-                  "findings": [finding("blocker", "tests", "weakened-gate", "src/a.ts")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(tests="fail"),
+            "findings": [finding("blocker", "tests", "weakened-gate", "src/a.ts")],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 1)
 
     def test_weakened_gate_on_gate_paths_kept(self):
-        paths = ["scripts/test_a.py", ".github/workflows/ci.yml", "jest.config.js", "AGENTS.md",
-                 "scripts/review_pr.py", "prompts/review-pr.md"]
-        review = {"checks": checks(safety="fail"),
-                  "findings": [finding("blocker", "safety", "weakened-gate", p) for p in paths],
-                  "follow_ups": []}
+        paths = [
+            "scripts/test_a.py",
+            ".github/workflows/ci.yml",
+            "jest.config.js",
+            "AGENTS.md",
+            "scripts/review_pr.py",
+            "prompts/review-pr.md",
+        ]
+        review = {
+            "checks": checks(safety="fail"),
+            "findings": [finding("blocker", "safety", "weakened-gate", p) for p in paths],
+            "follow_ups": [],
+        }
         self.assertEqual(downgrade(validate(review)), 0)
 
 
 class ConcludeTest(unittest.TestCase):
     def test_run_record_counts_downgrades(self):
-        review = {"checks": checks(correctness="fail"),
-                  "findings": [finding("blocker", category="none"), finding("nit")],
-                  "follow_ups": []}
+        review = {
+            "checks": checks(correctness="fail"),
+            "findings": [finding("blocker", category="none"), finding("nit")],
+            "follow_ups": [],
+        }
         run = {}
         comment = conclude(validate(review), "S", [], run)
         self.assertEqual(run["downgraded"], 1)
@@ -346,8 +402,12 @@ class RenderTest(unittest.TestCase):
         self.assertIn("No blocking findings.", text)
 
     def test_blockers_first_and_tier_label(self):
-        text = render("Changes needed", "M+", ["ci"],
-                      {"findings": [finding("nit"), finding("blocker")], "follow_ups": ["Later."]})
+        text = render(
+            "Changes needed",
+            "M+",
+            ["ci"],
+            {"findings": [finding("nit"), finding("blocker")], "follow_ups": ["Later."]},
+        )
         self.assertLess(text.index("blocker"), text.index("nit"))
         self.assertIn("Review tier: M+ (ci)", text)
         self.assertIn("Follow-ups", text)
@@ -366,8 +426,12 @@ class RecheckTest(unittest.TestCase):
         self.earlier = [earlier_finding("blocker", "old.ts"), earlier_finding("should-fix", "b.ts")]
 
     def review(self, statuses, findings=(), **fails):
-        return {"checks": checks(**fails), "findings": list(findings), "follow_ups": [],
-                "earlier": statuses}
+        return {
+            "checks": checks(**fails),
+            "findings": list(findings),
+            "follow_ups": [],
+            "earlier": statuses,
+        }
 
     def test_open_earlier_finding_keeps_severity(self):
         review = self.review([status(1, "open"), status(2, "fixed")])
@@ -378,8 +442,7 @@ class RecheckTest(unittest.TestCase):
 
     def test_check_failed_by_open_earlier_blocker_accepted(self):
         review = self.review([status(1, "open"), status(2, "fixed")], correctness="fail")
-        self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}),
-                         {"fixed": 1, "open": 1})
+        self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}), {"fixed": 1, "open": 1})
         run = {}
         conclude(review, "S", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
@@ -387,16 +450,19 @@ class RecheckTest(unittest.TestCase):
     def test_follow_up_still_rejects_bad_findings(self):
         bad = dict(finding("nit"), severity="critical")
         with self.assertRaises(ValueError):
-            assess_follow_up(self.review([status(1, "open"), status(2, "fixed")], [bad]),
-                             self.earlier, {"a.ts"})
+            assess_follow_up(
+                self.review([status(1, "open"), status(2, "fixed")], [bad]), self.earlier, {"a.ts"}
+            )
 
     def test_missing_status_rejected(self):
         with self.assertRaises(ValueError):
             recheck(self.review([status(1, "fixed")]), self.earlier, set())
 
     def test_unknown_or_duplicate_id_rejected(self):
-        for statuses in ([status(1, "fixed"), status(3, "fixed")],
-                         [status(1, "fixed"), status(1, "open")]):
+        for statuses in (
+            [status(1, "fixed"), status(3, "fixed")],
+            [status(1, "fixed"), status(1, "open")],
+        ):
             with self.subTest(statuses=statuses), self.assertRaises(ValueError):
                 recheck(self.review(statuses), self.earlier, set())
 
@@ -412,8 +478,9 @@ class RecheckTest(unittest.TestCase):
 
     def test_new_finding_outside_new_commits_becomes_follow_up(self):
         outside = dict(finding("blocker"), path="old.ts")
-        review = self.review([status(1, "fixed"), status(2, "fixed")],
-                             [finding("nit"), outside], correctness="fail")
+        review = self.review(
+            [status(1, "fixed"), status(2, "fixed")], [finding("nit"), outside], correctness="fail"
+        )
         recheck(review, self.earlier, {"a.ts"})
         self.assertEqual(review["findings"], [finding("nit")])
         self.assertEqual(review["follow_ups"], ["old.ts:1: P."])
@@ -422,18 +489,17 @@ class RecheckTest(unittest.TestCase):
     def test_verdict_counts_open_earlier_and_new_blockers(self):
         review = self.review([status(1, "fixed"), status(2, "fixed")])
         recheck(review, self.earlier, {"a.ts"})
-        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0],
-                         "**Verdict:** Ready to merge")
+        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0], "**Verdict:** Ready to merge")
         review = self.review([status(1, "open"), status(2, "fixed")])
         recheck(review, self.earlier, {"a.ts"})
         run = {}
         conclude(review, "S", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
-        review = self.review([status(1, "fixed"), status(2, "fixed")],
-                             [finding("blocker")], correctness="fail")
+        review = self.review(
+            [status(1, "fixed"), status(2, "fixed")], [finding("blocker")], correctness="fail"
+        )
         recheck(review, self.earlier, {"a.ts"})
-        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0],
-                         "**Verdict:** Changes needed")
+        self.assertEqual(conclude(review, "S", [], {}).splitlines()[0], "**Verdict:** Changes needed")
 
     def test_render_lists_fixed_findings(self):
         review = self.review([status(1, "fixed"), status(2, "open")])
@@ -490,9 +556,11 @@ class LoadEarlierTest(unittest.TestCase):
         self.assertEqual(load_earlier(self.out, "o/r", 3), (run, [finding("nit")]))
 
     def test_rejects_other_pr_failed_run_or_missing_review(self):
-        cases = [({"repo": "o/r", "pr": 4, "status": "ok", "head": "a"}, []),
-                 ({"repo": "o/r", "pr": 3, "status": "failed", "head": "a"}, []),
-                 ({"repo": "o/r", "pr": 3, "status": "ok", "head": "a"}, None)]
+        cases = [
+            ({"repo": "o/r", "pr": 4, "status": "ok", "head": "a"}, []),
+            ({"repo": "o/r", "pr": 3, "status": "failed", "head": "a"}, []),
+            ({"repo": "o/r", "pr": 3, "status": "ok", "head": "a"}, None),
+        ]
         for run, findings in cases:
             with self.subTest(run=run, findings=findings):
                 (self.out / "review.json").unlink(missing_ok=True)

@@ -43,8 +43,10 @@ ESCALATIONS = {
     "ci": r"^\.github/workflows/",
     "agent-rules": r"(^|/)(AGENTS|CLAUDE)\.md$",
     "dependencies": r"(^|/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]+\.lock)$",
-    "test-gates": (r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
-                   r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"),
+    "test-gates": (
+        r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
+        r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"
+    ),
     "secrets": r"(auth|credential|secret|token|\.env)",
     # The reviewer's own rules: tiering, escalation, severity, and the prompt.
     "review-gates": r"(^|/)(scripts/review_pr\.py|prompts/review-[^/]+)$",
@@ -65,8 +67,10 @@ FITS = {
     "weakened-gate": {"tests", "safety"},
     "unmet-acceptance": {"acceptance", "tests"},
 }
-GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.I)
-                        for k in ("ci", "test-gates", "agent-rules", "review-gates")]
+GATE_PATHS = [TEST] + [
+    re.compile(ESCALATIONS[k], re.IGNORECASE)
+    for k in ("ci", "test-gates", "agent-rules", "review-gates")
+]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
 
@@ -129,8 +133,9 @@ def diff_stats(checkout, base, head):
     """Return (rows, deleted) for base..head, read with -z so paths stay unquoted."""
     span = f"{base}..{head}"
     rows = parse_numstat(sh("git", "diff", "-z", "-M", "--numstat", span, cwd=checkout))
-    deleted = parse_deleted(sh("git", "diff", "-z", "-M", "--name-status",
-                               "--diff-filter=DR", span, cwd=checkout))
+    deleted = parse_deleted(
+        sh("git", "diff", "-z", "-M", "--name-status", "--diff-filter=DR", span, cwd=checkout)
+    )
     return rows, deleted
 
 
@@ -149,8 +154,9 @@ def classify(rows, deleted):
         if added != "-":
             lines += int(added) + int(removed)
     hits = sorted(
-        name for name, pattern in ESCALATIONS.items()
-        if any(re.search(pattern, p, re.I) for p in paths)
+        name
+        for name, pattern in ESCALATIONS.items()
+        if any(re.search(pattern, p, re.IGNORECASE) for p in paths)
     )
     if any(TEST.search(p) for p in deleted):
         hits.append("deleted-tests")
@@ -172,9 +178,13 @@ def validate(review):
     if any(s not in ("pass", "fail", "n/a") for s in review["checks"].values()):
         raise ValueError("check status must be pass, fail, or n/a")
     for f in review["findings"]:
-        if (set(f) != FIELDS or f["check"] not in CHECKS
-                or f["severity"] not in SEVERITIES or f["category"] not in CATEGORIES
-                or not isinstance(f["line"], int)):
+        if (
+            set(f) != FIELDS
+            or f["check"] not in CHECKS
+            or f["severity"] not in SEVERITIES
+            or f["category"] not in CATEGORIES
+            or not isinstance(f["line"], int)
+        ):
             raise ValueError(f"finding does not match the schema: {f}")
     sync_checks(review)
     kept, nits = [], 0
@@ -219,12 +229,19 @@ def recheck_schema():
     """The review schema plus one status for each earlier finding."""
     schema = json.loads(SCHEMA.read_text())
     schema["required"].append("earlier")
-    schema["properties"]["earlier"] = {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["id", "status", "note"],
-        "properties": {"id": {"type": "integer"},
-                       "status": {"type": "string", "enum": STATUSES},
-                       "note": {"type": "string"}},
-    }}
+    schema["properties"]["earlier"] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["id", "status", "note"],
+            "properties": {
+                "id": {"type": "integer"},
+                "status": {"type": "string", "enum": STATUSES},
+                "note": {"type": "string"},
+            },
+        },
+    }
     return schema
 
 
@@ -232,15 +249,21 @@ def load_earlier(path, repo, pr):
     """Return (run, findings) from an earlier finished review of the same PR."""
     run = json.loads((path / "run.json").read_text())
     review = path / "review.json"
-    if (run.get("repo"), run.get("pr"), run.get("status")) != (repo, pr, "ok") \
-            or not review.exists():
+    if (run.get("repo"), run.get("pr"), run.get("status")) != (repo, pr, "ok") or not review.exists():
         raise ValueError(f"{path} is not a finished review of {repo}#{pr}")
     return run, json.loads(review.read_text())["findings"]
 
 
 def is_ancestor(checkout, old, new):
-    return subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=checkout,
-                          capture_output=True).returncode == 0
+    return (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old, new],
+            cwd=checkout,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def follow_up_base(checkout, target, earlier, head):
@@ -253,22 +276,31 @@ def follow_up_base(checkout, target, earlier, head):
     merge_base = sh("git", "merge-base", target, head, cwd=checkout).strip()
     if is_ancestor(checkout, merge_base, earlier):
         return earlier
-    replay = subprocess.run(["git", "merge-tree", "--write-tree", earlier, merge_base],
-                            cwd=checkout, capture_output=True, text=True)
+    replay = subprocess.run(
+        ["git", "merge-tree", "--write-tree", earlier, merge_base],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if replay.returncode != 0:
-        raise ValueError(f"earlier head {earlier} conflicts with the merged base branch; "
-                         "review the full PR")
+        raise ValueError(
+            f"earlier head {earlier} conflicts with the merged base branch; review the full PR"
+        )
     return replay.stdout.split("\n", 1)[0]
 
 
 def earlier_block(findings, head):
     """Describe the earlier findings for the follow-up prompt."""
-    lines = [f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
-             for i, f in enumerate(findings, 1)]
+    lines = [
+        f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
+        for i, f in enumerate(findings, 1)
+    ]
     return (
         f"<earlier_findings>\nThis is a follow-up review. The earlier review of commit "
         f"{head} reported the findings below. The diff holds only the commits since then.\n"
-        + "\n".join(lines or ["(none)"]) + "\n</earlier_findings>\n\n"
+        + "\n".join(lines or ["(none)"])
+        + "\n</earlier_findings>\n\n"
         "For each earlier finding, add an `earlier` entry with its number, `fixed` or "
         "`open`, and a one-sentence note. Report a new finding only for a defect the new "
         "commits introduce. Code the earlier review already saw is out of scope.\n"
@@ -283,17 +315,25 @@ def recheck(review, earlier, changed):
     becomes a follow-up.
     """
     statuses = review.get("earlier")
-    if (not isinstance(statuses, list)
-            or any(not isinstance(s, dict) or set(s) != {"id", "status", "note"}
-                   or s["status"] not in STATUSES for s in statuses)
-            or sorted(s["id"] for s in statuses) != list(range(1, len(earlier) + 1))):
+    if (
+        not isinstance(statuses, list)
+        or any(
+            not isinstance(s, dict) or set(s) != {"id", "status", "note"} or s["status"] not in STATUSES
+            for s in statuses
+        )
+        or sorted(s["id"] for s in statuses) != list(range(1, len(earlier) + 1))
+    ):
         raise ValueError("earlier statuses must cover each earlier finding once")
     new = [f for f in review["findings"] if f["path"] in changed]
-    review["follow_ups"] += [f"{f['path']}:{f['line']}: {f['problem']}"
-                             for f in review["findings"] if f["path"] not in changed]
+    review["follow_ups"] += [
+        f"{f['path']}:{f['line']}: {f['problem']}"
+        for f in review["findings"]
+        if f["path"] not in changed
+    ]
     still_open = [dict(earlier[s["id"] - 1]) for s in statuses if s["status"] == "open"]
-    review["earlier"] = [dict(earlier[s["id"] - 1], status=s["status"], note=s["note"])
-                         for s in statuses]
+    review["earlier"] = [
+        dict(earlier[s["id"] - 1], status=s["status"], note=s["note"]) for s in statuses
+    ]
     review["findings"] = still_open + new
     sync_checks(review)
     return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
@@ -335,8 +375,7 @@ def conclude(review, tier, escalations, run):
     run["downgraded"] = downgrade(review)
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
     run["verdict"] = "Changes needed" if blockers else "Ready to merge"
-    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"])
-                       for s in SEVERITIES}
+    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"]) for s in SEVERITIES}
     return render(run["verdict"], tier, escalations, review)
 
 
@@ -349,10 +388,11 @@ def format_checks(runs, statuses):
 
 def ci_result(repo, head):
     """Read CI for the pinned head, not whatever the PR points at now."""
+
     def pages(path, key):
-        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}",
-                 "--jq", f".{key}[]")
+        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}", "--jq", f".{key}[]")
         return [json.loads(line) for line in out.splitlines()]
+
     return format_checks(pages("check-runs", "check_runs"), pages("status", "statuses"))
 
 
@@ -376,19 +416,49 @@ def run_reviewer(reviewer, checkout, prompt, out, schema):
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
             subprocess.run(
-                ["codex", "exec", "-C", str(checkout), "-s", "read-only", "--ephemeral",
-                 "--output-schema", str(out / "schema.json"), "-o", str(out / "raw.txt"), "-"],
-                input=prompt, text=True, stdout=log, stderr=log, check=True,
+                [
+                    "codex",
+                    "exec",
+                    "-C",
+                    str(checkout),
+                    "-s",
+                    "read-only",
+                    "--ephemeral",
+                    "--output-schema",
+                    str(out / "schema.json"),
+                    "-o",
+                    str(out / "raw.txt"),
+                    "-",
+                ],
+                input=prompt,
+                text=True,
+                stdout=log,
+                stderr=log,
+                check=True,
             )
         return json.loads((out / "raw.txt").read_text())
     # Claude has no OS sandbox here, so it gets no shell. It reads the saved
     # diff and repo files only.
     result = subprocess.run(
-        ["claude", "-p", "--output-format", "json",
-         "--json-schema", json.dumps(schema), "--add-dir", str(out),
-         "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
-         "--allowedTools", "Read,Grep,Glob"],
-        cwd=checkout, input=prompt, text=True, capture_output=True, check=True,
+        [
+            "claude",
+            "-p",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema),
+            "--add-dir",
+            str(out),
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit",
+            "--allowedTools",
+            "Read,Grep,Glob",
+        ],
+        cwd=checkout,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        check=True,
     )
     (out / "raw.txt").write_text(result.stdout)
     wrapper = json.loads(result.stdout)
@@ -405,8 +475,15 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
     args = ap.parse_args()
 
-    pr = gh_json("pr", "view", str(args.pr), "-R", args.repo,
-                 "--json", "state,body,baseRefName,headRefOid,closingIssuesReferences")
+    pr = gh_json(
+        "pr",
+        "view",
+        str(args.pr),
+        "-R",
+        args.repo,
+        "--json",
+        "state,body,baseRefName,headRefOid,closingIssuesReferences",
+    )
     if pr["state"] != "OPEN":
         sys.exit(f"PR #{args.pr} is {pr['state'].lower()}, not open")
     head = pr["headRefOid"]
@@ -414,7 +491,7 @@ def main():
     # GitHub only links closing issues for PRs into the default branch, so
     # fall back to the "Closes #N" line for PRs into staging.
     refs = pr["closingIssuesReferences"]
-    match = re.search(r"^closes #(\d+)", pr["body"], re.I | re.M)
+    match = re.search(r"^closes #(\d+)", pr["body"], re.IGNORECASE | re.MULTILINE)
     issue = refs[0]["number"] if refs else match and int(match.group(1))
     if not issue:
         sys.exit(f"PR #{args.pr} does not close an issue")
@@ -433,11 +510,9 @@ def main():
             sys.exit(str(e))
         earlier_head = earlier[0]["head"]
         if not is_ancestor(args.checkout, earlier_head, head):
-            sys.exit(f"earlier head {earlier_head} is not an ancestor of {head}; "
-                     "review the full PR")
+            sys.exit(f"earlier head {earlier_head} is not an ancestor of {head}; review the full PR")
         try:
-            base = follow_up_base(args.checkout, f"origin/{pr['baseRefName']}",
-                                  earlier_head, head)
+            base = follow_up_base(args.checkout, f"origin/{pr['baseRefName']}", earlier_head, head)
         except ValueError as e:
             sys.exit(str(e))
 
@@ -459,7 +534,10 @@ def main():
         changed = {p for _, _, names in rows for p in names}
         run.update(
             prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
-            tier=tier, lines=lines, files=files, escalations=escalations,
+            tier=tier,
+            lines=lines,
+            files=files,
+            escalations=escalations,
         )
         if args.dry_run:
             print(json.dumps(run, indent=2))
@@ -492,12 +570,17 @@ def finish(args, pr, issue, base, head, out, run, earlier, changed):
         return
 
     values = {
-        "REPO": args.repo, "PR": str(args.pr), "BASE_SHA": base, "HEAD_SHA": head,
-        "DIFF_PATH": str(out / "diff.patch"), "TIER": tier,
+        "REPO": args.repo,
+        "PR": str(args.pr),
+        "BASE_SHA": base,
+        "HEAD_SHA": head,
+        "DIFF_PATH": str(out / "diff.patch"),
+        "TIER": tier,
         "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
         "CI_RESULT": ci_result(args.repo, head),
-        "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
-                         "--json", "body", "--jq", ".body").strip(),
+        "ISSUE_BODY": sh(
+            "gh", "issue", "view", str(issue), "-R", args.repo, "--json", "body", "--jq", ".body"
+        ).strip(),
         "PR_BODY": pr["body"].strip(),
         "EARLIER": earlier_block(earlier[1], earlier[0]["head"]) if earlier else "",
     }
