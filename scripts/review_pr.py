@@ -161,11 +161,11 @@ def classify(rows, deleted):
     return ("M+" if hits else "M"), lines, files, hits
 
 
-def validate(review, follow_up=False):
+def validate(review):
     """Reject output that breaks the schema or rules it cannot express.
 
-    A follow-up skips the check-versus-blocker rule: a check can fail on an
-    open earlier finding, and recheck recomputes every check anyway.
+    Check statuses come from the blockers, not the model: a model may fail a
+    related check with no blocker of its own, and only blockers decide.
     """
     if set(review) != {"checks", "findings", "follow_ups"} or set(review["checks"]) != CHECKS:
         raise ValueError("review does not match the schema")
@@ -176,10 +176,7 @@ def validate(review, follow_up=False):
                 or f["severity"] not in SEVERITIES or f["category"] not in CATEGORIES
                 or not isinstance(f["line"], int)):
             raise ValueError(f"finding does not match the schema: {f}")
-    blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
-    for check, status in review["checks"].items():
-        if not follow_up and (status == "fail") != (check in blocked):
-            raise ValueError(f"check {check} is {status} but blocker findings say otherwise")
+    sync_checks(review)
     kept, nits = [], 0
     for f in review["findings"]:
         nits += f["severity"] == "nit"
@@ -305,7 +302,7 @@ def recheck(review, earlier, changed):
 def assess_follow_up(review, earlier, changed):
     """Validate a follow-up answer and merge in the earlier findings."""
     statuses = review.pop("earlier", None)
-    validate(review, follow_up=True)
+    validate(review)
     review["earlier"] = statuses
     return recheck(review, earlier, changed)
 

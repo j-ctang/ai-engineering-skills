@@ -236,13 +236,24 @@ class RecordedTest(unittest.TestCase):
 
 
 class ValidateTest(unittest.TestCase):
-    def test_fail_without_blocker_rejected(self):
-        with self.assertRaises(ValueError):
-            validate({"checks": checks(tests="fail"), "findings": [], "follow_ups": []})
+    def test_fail_without_blocker_passes(self):
+        review = validate({"checks": checks(tests="fail"), "findings": [], "follow_ups": []})
+        self.assertEqual(review["checks"]["tests"], "pass")
 
-    def test_blocker_without_fail_rejected(self):
-        with self.assertRaises(ValueError):
-            validate({"checks": checks(), "findings": [finding("blocker")], "follow_ups": []})
+    def test_blocker_without_fail_fails_its_check(self):
+        review = validate({"checks": checks(), "findings": [finding("blocker")],
+                           "follow_ups": []})
+        self.assertEqual(review["checks"]["correctness"], "fail")
+
+    def test_related_check_failed_without_its_own_blocker(self):
+        review = {"checks": checks(acceptance="fail", correctness="fail"),
+                  "findings": [finding("blocker", "acceptance", "unmet-acceptance")],
+                  "follow_ups": []}
+        run = {}
+        conclude(validate(review), "M+", [], run)
+        self.assertEqual(run["verdict"], "Changes needed")
+        self.assertEqual(review["checks"]["acceptance"], "fail")
+        self.assertEqual(review["checks"]["correctness"], "pass")
 
     def test_missing_key_rejected(self):
         with self.assertRaises(ValueError):
