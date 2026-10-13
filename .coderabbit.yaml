@@ -49,7 +49,8 @@ reviews:
         escalation, deleted-test detection, schema validation, severity
         downgrades, or verdict rules, even when the linked issue asks for it.
         Also check pinned head and base commits, follow-up diff isolation,
-        and that review and dry-run never write to the checkout or post.
+        and that review and dry-run leave working-tree files unchanged and
+        never post.
     - path: "prompts/review-*"
       instructions: >-
         These files are the reviewer's rules. Flag wording that contradicts
