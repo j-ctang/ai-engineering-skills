@@ -29,6 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
 SCHEMA = HERE / "prompts" / "review-schema.json"
+LOG_ROOT = Path("/tmp/review")
 
 # Files that do not count toward review size.
 IGNORED = re.compile(
@@ -372,6 +373,10 @@ def recorded(out, run):
     finally:
         run["seconds"] = round(time.time() - started)
         (out / "run.json").write_text(json.dumps(run, indent=2))
+    if run["status"] != "dry-run":
+        LOG_ROOT.mkdir(parents=True, exist_ok=True)
+        with (LOG_ROOT / "runs.jsonl").open("a") as log:
+            log.write(json.dumps(run) + "\n")
 
 
 def run_reviewer(reviewer, checkout, prompt, out, schema):
@@ -450,7 +455,7 @@ def main():
 
     # One directory per run, so reruns and other repos never overwrite a record.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = Path("/tmp/review") / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
+    out = LOG_ROOT / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 

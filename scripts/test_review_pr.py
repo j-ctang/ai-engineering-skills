@@ -210,6 +210,10 @@ class RecordedTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.out = Path(self.dir.name)
+        self.root = self.out / "review"
+        patch = mock.patch.object(review_pr, "LOG_ROOT", self.root, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         self.dir.cleanup()
@@ -229,10 +233,20 @@ class RecordedTest(unittest.TestCase):
             pass
         self.assertEqual(self.record()["status"], "ok")
 
+    def test_success_appends_matching_records(self):
+        records = []
+        for pr in (1, 2):
+            with recorded(self.out, {"pr": pr, "repo": "o/r", "head": "abc"}):
+                pass
+            records.append(self.record())
+        lines = (self.root / "runs.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(line) for line in lines], records)
+
     def test_dry_run_status_kept(self):
         with recorded(self.out, {"status": "dry-run"}):
             pass
         self.assertEqual(self.record()["status"], "dry-run")
+        self.assertFalse((self.root / "runs.jsonl").exists())
 
 
 class ValidateTest(unittest.TestCase):
