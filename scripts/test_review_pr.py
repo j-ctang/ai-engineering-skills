@@ -218,7 +218,7 @@ class GitDiffTest(unittest.TestCase):
 
 class CiTest(unittest.TestCase):
     def test_format_checks(self):
-        runs = [
+        runs: list[dict[str, str | None]] = [
             {"name": "offline-check", "status": "completed", "conclusion": "success"},
             {"name": "lint", "status": "in_progress", "conclusion": None},
         ]
@@ -281,7 +281,7 @@ class ValidateTest(unittest.TestCase):
             "findings": [finding("blocker", "acceptance", "unmet-acceptance")],
             "follow_ups": [],
         }
-        run = {}
+        run: review_pr.Run = {}
         conclude(validate(review), "M+", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
         self.assertEqual(review["checks"]["acceptance"], "fail")
@@ -388,7 +388,7 @@ class ConcludeTest(unittest.TestCase):
             "findings": [finding("blocker", category="none"), finding("nit")],
             "follow_ups": [],
         }
-        run = {}
+        run: review_pr.Run = {}
         comment = conclude(validate(review), "S", [], run)
         self.assertEqual(run["downgraded"], 1)
         self.assertEqual(run["verdict"], "Ready to merge")
@@ -443,7 +443,7 @@ class RecheckTest(unittest.TestCase):
     def test_check_failed_by_open_earlier_blocker_accepted(self):
         review = self.review([status(1, "open"), status(2, "fixed")], correctness="fail")
         self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}), {"fixed": 1, "open": 1})
-        run = {}
+        run: review_pr.Run = {}
         conclude(review, "S", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
 
@@ -492,7 +492,7 @@ class RecheckTest(unittest.TestCase):
         self.assertEqual(conclude(review, "S", [], {}).splitlines()[0], "**Verdict:** Ready to merge")
         review = self.review([status(1, "open"), status(2, "fixed")])
         recheck(review, self.earlier, {"a.ts"})
-        run = {}
+        run: review_pr.Run = {}
         conclude(review, "S", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
         review = self.review(
@@ -556,7 +556,7 @@ class LoadEarlierTest(unittest.TestCase):
         self.assertEqual(load_earlier(self.out, "o/r", 3), (run, [finding("nit")]))
 
     def test_rejects_other_pr_failed_run_or_missing_review(self):
-        cases = [
+        cases: list[tuple[review_pr.Run, list[review_pr.Finding] | None]] = [
             ({"repo": "o/r", "pr": 4, "status": "ok", "head": "a"}, []),
             ({"repo": "o/r", "pr": 3, "status": "failed", "head": "a"}, []),
             ({"repo": "o/r", "pr": 3, "status": "ok", "head": "a"}, None),
