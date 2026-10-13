@@ -23,8 +23,10 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
@@ -88,21 +90,29 @@ TIER_INSTRUCTIONS = {
     ),
 }
 
+# Model output and run records are JSON objects checked at runtime by validate().
+Finding = dict[str, Any]
+Review = dict[str, Any]
+Run = dict[str, Any]
+Row = tuple[str, str, tuple[str, ...]]
+Earlier = tuple[Run, list[Finding]]
 
-def sh(*args, cwd=None):
+
+def sh(*args: str, cwd: Path | str | None = None) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
-def gh_json(*args):
+def gh_json(*args: str) -> Any:
     return json.loads(sh("gh", *args))
 
 
-def parse_numstat(raw):
+def parse_numstat(raw: str) -> list[Row]:
     """Parse `git diff -z -M --numstat` into (added, removed, paths) rows.
 
     A rename lists both paths, source first, so both sides can escalate.
     """
-    rows, tokens = [], iter(raw.split("\0"))
+    rows: list[Row] = []
+    tokens = iter(raw.split("\0"))
     for token in tokens:
         if not token:
             continue
@@ -112,13 +122,14 @@ def parse_numstat(raw):
     return rows
 
 
-def parse_deleted(raw):
+def parse_deleted(raw: str) -> list[str]:
     """Parse `git diff -z -M --name-status --diff-filter=DR` into removed paths.
 
     A rename counts as a deletion of its source when it moves a test out of
     the test paths, so a test cannot vanish by being renamed.
     """
-    removed, tokens = [], iter(raw.split("\0"))
+    removed: list[str] = []
+    tokens = iter(raw.split("\0"))
     for status in tokens:
         if status.startswith("D"):
             removed.append(next(tokens))
@@ -129,7 +140,7 @@ def parse_deleted(raw):
     return removed
 
 
-def diff_stats(checkout, base, head):
+def diff_stats(checkout: Path, base: str, head: str) -> tuple[list[Row], list[str]]:
     """Return (rows, deleted) for base..head, read with -z so paths stay unquoted."""
     span = f"{base}..{head}"
     rows = parse_numstat(sh("git", "diff", "-z", "-M", "--numstat", span, cwd=checkout))
@@ -139,13 +150,13 @@ def diff_stats(checkout, base, head):
     return rows, deleted
 
 
-def classify(rows, deleted):
+def classify(rows: Sequence[Row], deleted: Sequence[str]) -> tuple[str, int, int, list[str]]:
     """Return (tier, lines, files, escalations) for parse_numstat rows.
 
     Size uses the destination path; escalation checks every path.
     """
     lines = files = 0
-    paths = []
+    paths: list[str] = []
     for added, removed, names in rows:
         paths += names
         if IGNORED.search(names[-1]) or TEST.search(names[-1]):
@@ -167,7 +178,7 @@ def classify(rows, deleted):
     return ("M+" if hits else "M"), lines, files, hits
 
 
-def validate(review):
+def validate(review: Review) -> Review:
     """Reject output that breaks the schema or rules it cannot express.
 
     Check statuses come from the blockers, not the model: a model may fail a
@@ -196,7 +207,7 @@ def validate(review):
     return review
 
 
-def sync_checks(review):
+def sync_checks(review: Review) -> None:
     """Fail exactly the checks that still have a blocker."""
     blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
     for check, status in review["checks"].items():
@@ -206,14 +217,14 @@ def sync_checks(review):
             review["checks"][check] = "pass"
 
 
-def fits(f):
+def fits(f: Finding) -> bool:
     """Whether a blocker's category fits its check and, for a gate, its path."""
     if f["check"] not in FITS.get(f["category"], ()):
         return False
     return f["category"] != "weakened-gate" or any(p.search(f["path"]) for p in GATE_PATHS)
 
 
-def downgrade(review):
+def downgrade(review: Review) -> int:
     """Turn blockers whose reason is missing or does not fit into should-fix.
     Return the count."""
     count = 0
@@ -225,9 +236,9 @@ def downgrade(review):
     return count
 
 
-def recheck_schema():
+def recheck_schema() -> dict[str, Any]:
     """The review schema plus one status for each earlier finding."""
-    schema = json.loads(SCHEMA.read_text())
+    schema: dict[str, Any] = json.loads(SCHEMA.read_text())
     schema["required"].append("earlier")
     schema["properties"]["earlier"] = {
         "type": "array",
@@ -245,7 +256,7 @@ def recheck_schema():
     return schema
 
 
-def load_earlier(path, repo, pr):
+def load_earlier(path: Path, repo: str, pr: int) -> Earlier:
     """Return (run, findings) from an earlier finished review of the same PR."""
     run = json.loads((path / "run.json").read_text())
     review = path / "review.json"
@@ -254,7 +265,7 @@ def load_earlier(path, repo, pr):
     return run, json.loads(review.read_text())["findings"]
 
 
-def is_ancestor(checkout, old, new):
+def is_ancestor(checkout: Path, old: str, new: str) -> bool:
     return (
         subprocess.run(
             ["git", "merge-base", "--is-ancestor", old, new],
@@ -266,7 +277,7 @@ def is_ancestor(checkout, old, new):
     )
 
 
-def follow_up_base(checkout, target, earlier, head):
+def follow_up_base(checkout: Path, target: str, earlier: str, head: str) -> str:
     """Return the tree or commit a follow-up diff starts from.
 
     If the branch merged the base branch after the earlier review, replay the
@@ -290,7 +301,7 @@ def follow_up_base(checkout, target, earlier, head):
     return replay.stdout.split("\n", 1)[0]
 
 
-def earlier_block(findings, head):
+def earlier_block(findings: list[Finding], head: str) -> str:
     """Describe the earlier findings for the follow-up prompt."""
     lines = [
         f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
@@ -307,7 +318,7 @@ def earlier_block(findings, head):
     )
 
 
-def recheck(review, earlier, changed):
+def recheck(review: Review, earlier: list[Finding], changed: set[str]) -> dict[str, int]:
     """Merge earlier findings into a follow-up review. Return the status counts.
 
     Each earlier finding needs exactly one status. An open one comes back with
@@ -339,7 +350,7 @@ def recheck(review, earlier, changed):
     return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
 
 
-def assess_follow_up(review, earlier, changed):
+def assess_follow_up(review: Review, earlier: list[Finding], changed: set[str]) -> dict[str, int]:
     """Validate a follow-up answer and merge in the earlier findings."""
     statuses = review.pop("earlier", None)
     validate(review)
@@ -347,7 +358,7 @@ def assess_follow_up(review, earlier, changed):
     return recheck(review, earlier, changed)
 
 
-def render(verdict, tier, escalations, review):
+def render(verdict: str, tier: str, escalations: list[str], review: Review) -> str:
     out = [f"**Verdict:** {verdict}", ""]
     label = tier + (f" ({', '.join(escalations)})" if escalations else "")
     out += [f"Review tier: {label}", ""]
@@ -370,7 +381,7 @@ def render(verdict, tier, escalations, review):
     return "\n".join(out) + "\n"
 
 
-def conclude(review, tier, escalations, run):
+def conclude(review: Review, tier: str, escalations: list[str], run: Run) -> str:
     """Apply downgrades, fill the run record, and return the comment."""
     run["downgraded"] = downgrade(review)
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
@@ -379,17 +390,17 @@ def conclude(review, tier, escalations, run):
     return render(run["verdict"], tier, escalations, review)
 
 
-def format_checks(runs, statuses):
+def format_checks(runs: Sequence[Mapping[str, Any]], statuses: Sequence[Mapping[str, Any]]) -> str:
     """Summarize check runs and commit statuses as "name: result"."""
     results = [f"{r['name']}: {r['conclusion'] or r['status']}" for r in runs]
     results += [f"{st['context']}: {st['state']}" for st in statuses]
     return ", ".join(results) or "none"
 
 
-def ci_result(repo, head):
+def ci_result(repo: str, head: str) -> str:
     """Read CI for the pinned head, not whatever the PR points at now."""
 
-    def pages(path, key):
+    def pages(path: str, key: str) -> list[dict[str, Any]]:
         out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}", "--jq", f".{key}[]")
         return [json.loads(line) for line in out.splitlines()]
 
@@ -397,7 +408,7 @@ def ci_result(repo, head):
 
 
 @contextmanager
-def recorded(out, run):
+def recorded(out: Path, run: Run) -> Iterator[None]:
     """Write run.json when the block ends, with the error if it failed."""
     started = time.time()
     try:
@@ -411,7 +422,8 @@ def recorded(out, run):
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
-def run_reviewer(reviewer, checkout, prompt, out, schema):
+def run_reviewer(reviewer: str, checkout: Path, prompt: str, out: Path, schema: dict[str, Any]) -> Any:
+    """Run the model and return its raw answer; validate() checks the shape."""
     (out / "schema.json").write_text(json.dumps(schema, indent=2))
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
@@ -465,7 +477,7 @@ def run_reviewer(reviewer, checkout, prompt, out, schema):
     return wrapper.get("structured_output") or json.loads(wrapper["result"])
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("reviewer", choices=["codex", "claude"])
     ap.add_argument("repo")
@@ -502,7 +514,7 @@ def main():
     if sh("git", "status", "--porcelain", cwd=args.checkout).strip():
         sys.exit(f"{args.checkout} has uncommitted changes")
     base = sh("git", "merge-base", f"origin/{pr['baseRefName']}", head, cwd=args.checkout).strip()
-    earlier = None
+    earlier: Earlier | None = None
     if args.since:
         try:
             earlier = load_earlier(args.since, args.repo, args.pr)
@@ -545,7 +557,7 @@ def main():
         finish(args, pr, issue, base, head, out, run, earlier, changed)
 
 
-def new_record(args, head, earlier):
+def new_record(args: argparse.Namespace, head: str, earlier: Earlier | None) -> Run:
     """Start the run record. A follow-up names its earlier run and counts rounds."""
     run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head, "round": 1}
     if earlier:
@@ -553,7 +565,17 @@ def new_record(args, head, earlier):
     return run
 
 
-def finish(args, pr, issue, base, head, out, run, earlier, changed):
+def finish(
+    args: argparse.Namespace,
+    pr: dict[str, Any],
+    issue: int,
+    base: str,
+    head: str,
+    out: Path,
+    run: Run,
+    earlier: Earlier | None,
+    changed: set[str],
+) -> None:
     """Write the prompt, run the model, and write the comment."""
     tier, escalations = run["tier"], run["escalations"]
     if tier == "L":
