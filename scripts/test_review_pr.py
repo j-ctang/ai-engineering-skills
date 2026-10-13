@@ -15,6 +15,23 @@ def numstat(*rows):
     return [(str(a), str(r), (p,)) for a, r, p in rows]
 
 
+class ClaudeCommandTest(unittest.TestCase):
+    def test_history_tools_allowed(self):
+        command = review_pr.claude_command(Path("review"), {"type": "object"})
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        self.assertEqual(allowed, ["Read", "Grep", "Glob", "Bash(git:*)"])
+        disallowed = command[command.index("--disallowedTools") + 1].split(",")
+        self.assertEqual(disallowed, ["Edit", "Write", "NotebookEdit"])
+
+    def test_schema_and_output_directory_preserved(self):
+        schema = {"type": "object", "required": ["checks"]}
+        command = review_pr.claude_command(Path("review output"), schema)
+        self.assertEqual(command[:5], ["claude", "-p", "--output-format", "json",
+                                       "--json-schema"])
+        self.assertEqual(json.loads(command[5]), schema)
+        self.assertEqual(command[command.index("--add-dir") + 1], "review output")
+
+
 class ClassifyTest(unittest.TestCase):
     def test_small(self):
         self.assertEqual(classify(numstat((10, 5, "src/a.ts")), []), ("S", 15, 1, []))

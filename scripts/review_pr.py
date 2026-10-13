@@ -374,6 +374,15 @@ def recorded(out, run):
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
+def claude_command(out, schema):
+    """Build the Claude review command."""
+    # Claude gets read-only git for history, plus saved diff and repo files.
+    return ["claude", "-p", "--output-format", "json",
+            "--json-schema", json.dumps(schema), "--add-dir", str(out),
+            "--disallowedTools", "Edit,Write,NotebookEdit",
+            "--allowedTools", "Read,Grep,Glob,Bash(git:*)"]
+
+
 def run_reviewer(reviewer, checkout, prompt, out, schema):
     (out / "schema.json").write_text(json.dumps(schema, indent=2))
     if reviewer == "codex":
@@ -384,13 +393,8 @@ def run_reviewer(reviewer, checkout, prompt, out, schema):
                 input=prompt, text=True, stdout=log, stderr=log, check=True,
             )
         return json.loads((out / "raw.txt").read_text())
-    # Claude has no OS sandbox here, so it gets no shell. It reads the saved
-    # diff and repo files only.
     result = subprocess.run(
-        ["claude", "-p", "--output-format", "json",
-         "--json-schema", json.dumps(schema), "--add-dir", str(out),
-         "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
-         "--allowedTools", "Read,Grep,Glob"],
+        claude_command(out, schema),
         cwd=checkout, input=prompt, text=True, capture_output=True, check=True,
     )
     (out / "raw.txt").write_text(result.stdout)
