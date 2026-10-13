@@ -41,8 +41,11 @@ reviews:
         Report only concrete correctness, security, data-loss, weakened-gate,
         or unmet-acceptance problems this PR introduces. For each, cite the
         changed line, a reachable failure scenario, and the smallest fix.
-        Read callers and tests before claiming a defect. Skip style and
-        speculative hardening. A clean review is fine.
+        Read callers and tests before claiming a defect. Check each
+        acceptance item in the linked issue against the code. Report an
+        unmet item inline at the code line responsible, not only as a
+        missing test. Skip style and speculative hardening. A clean review
+        is fine.
     - path: "scripts/review_pr.py"
       instructions: >-
         This script is a review gate. Flag any change that weakens tiering,
