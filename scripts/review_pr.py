@@ -65,7 +65,7 @@ FITS = {
     "weakened-gate": {"tests", "safety"},
     "unmet-acceptance": {"acceptance", "tests"},
 }
-GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.I)
+GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.IGNORECASE)
                         for k in ("ci", "test-gates", "agent-rules", "review-gates")]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
@@ -150,7 +150,7 @@ def classify(rows, deleted):
             lines += int(added) + int(removed)
     hits = sorted(
         name for name, pattern in ESCALATIONS.items()
-        if any(re.search(pattern, p, re.I) for p in paths)
+        if any(re.search(pattern, p, re.IGNORECASE) for p in paths)
     )
     if any(TEST.search(p) for p in deleted):
         hits.append("deleted-tests")
@@ -240,7 +240,7 @@ def load_earlier(path, repo, pr):
 
 def is_ancestor(checkout, old, new):
     return subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=checkout,
-                          capture_output=True).returncode == 0
+                          capture_output=True, check=False).returncode == 0
 
 
 def follow_up_base(checkout, target, earlier, head):
@@ -254,7 +254,7 @@ def follow_up_base(checkout, target, earlier, head):
     if is_ancestor(checkout, merge_base, earlier):
         return earlier
     replay = subprocess.run(["git", "merge-tree", "--write-tree", earlier, merge_base],
-                            cwd=checkout, capture_output=True, text=True)
+                            cwd=checkout, capture_output=True, text=True, check=False)
     if replay.returncode != 0:
         raise ValueError(f"earlier head {earlier} conflicts with the merged base branch; "
                          "review the full PR")
@@ -414,7 +414,7 @@ def main():
     # GitHub only links closing issues for PRs into the default branch, so
     # fall back to the "Closes #N" line for PRs into staging.
     refs = pr["closingIssuesReferences"]
-    match = re.search(r"^closes #(\d+)", pr["body"], re.I | re.M)
+    match = re.search(r"^closes #(\d+)", pr["body"], re.IGNORECASE | re.MULTILINE)
     issue = refs[0]["number"] if refs else match and int(match.group(1))
     if not issue:
         sys.exit(f"PR #{args.pr} does not close an issue")

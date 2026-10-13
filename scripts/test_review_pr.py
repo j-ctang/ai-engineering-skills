@@ -6,9 +6,24 @@ from pathlib import Path
 from unittest import mock
 
 import review_pr
-from review_pr import (assess_follow_up, classify, conclude, diff_stats, downgrade, earlier_block,
-                       follow_up_base, format_checks, is_ancestor, load_earlier, new_record, recheck,
-                       recheck_schema, recorded, render, validate)
+from review_pr import (
+    assess_follow_up,
+    classify,
+    conclude,
+    diff_stats,
+    downgrade,
+    earlier_block,
+    follow_up_base,
+    format_checks,
+    is_ancestor,
+    load_earlier,
+    new_record,
+    recheck,
+    recheck_schema,
+    recorded,
+    render,
+    validate,
+)
 
 
 def numstat(*rows):
@@ -218,9 +233,8 @@ class RecordedTest(unittest.TestCase):
         return json.loads((self.out / "run.json").read_text())
 
     def test_failure_keeps_record(self):
-        with self.assertRaises(ValueError):
-            with recorded(self.out, {"pr": 1}):
-                raise ValueError("bad JSON")
+        with self.assertRaises(ValueError), recorded(self.out, {"pr": 1}):
+            raise ValueError("bad JSON")
         self.assertEqual(self.record()["status"], "failed")
         self.assertEqual(self.record()["error"], "ValueError: bad JSON")
 
