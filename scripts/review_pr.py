@@ -23,8 +23,10 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
@@ -43,8 +45,10 @@ ESCALATIONS = {
     "ci": r"^\.github/workflows/",
     "agent-rules": r"(^|/)(AGENTS|CLAUDE)\.md$",
     "dependencies": r"(^|/)(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|[^/]+\.lock)$",
-    "test-gates": (r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
-                   r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"),
+    "test-gates": (
+        r"(^|/)(jest\.config\.[^/]+|\.eslintrc[^/]*|eslint\.config\.[^/]+"
+        r"|tsconfig[^/]*\.json|scripts/(check|verify)[^/]*)$"
+    ),
     "secrets": r"(auth|credential|secret|token|\.env)",
     # The reviewer's own rules: tiering, escalation, severity, and the prompt.
     "review-gates": r"(^|/)(scripts/review_pr\.py|prompts/review-[^/]+)$",
@@ -65,8 +69,10 @@ FITS = {
     "weakened-gate": {"tests", "safety"},
     "unmet-acceptance": {"acceptance", "tests"},
 }
-GATE_PATHS = [TEST] + [re.compile(ESCALATIONS[k], re.I)
-                        for k in ("ci", "test-gates", "agent-rules", "review-gates")]
+GATE_PATHS = [TEST] + [
+    re.compile(ESCALATIONS[k], re.IGNORECASE)
+    for k in ("ci", "test-gates", "agent-rules", "review-gates")
+]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
 
@@ -84,21 +90,29 @@ TIER_INSTRUCTIONS = {
     ),
 }
 
+# Model output and run records are JSON objects checked at runtime by validate().
+Finding = dict[str, Any]
+Review = dict[str, Any]
+Run = dict[str, Any]
+Row = tuple[str, str, tuple[str, ...]]
+Earlier = tuple[Run, list[Finding]]
 
-def sh(*args, cwd=None):
+
+def sh(*args: str, cwd: Path | str | None = None) -> str:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
-def gh_json(*args):
+def gh_json(*args: str) -> Any:
     return json.loads(sh("gh", *args))
 
 
-def parse_numstat(raw):
+def parse_numstat(raw: str) -> list[Row]:
     """Parse `git diff -z -M --numstat` into (added, removed, paths) rows.
 
     A rename lists both paths, source first, so both sides can escalate.
     """
-    rows, tokens = [], iter(raw.split("\0"))
+    rows: list[Row] = []
+    tokens = iter(raw.split("\0"))
     for token in tokens:
         if not token:
             continue
@@ -108,13 +122,14 @@ def parse_numstat(raw):
     return rows
 
 
-def parse_deleted(raw):
+def parse_deleted(raw: str) -> list[str]:
     """Parse `git diff -z -M --name-status --diff-filter=DR` into removed paths.
 
     A rename counts as a deletion of its source when it moves a test out of
     the test paths, so a test cannot vanish by being renamed.
     """
-    removed, tokens = [], iter(raw.split("\0"))
+    removed: list[str] = []
+    tokens = iter(raw.split("\0"))
     for status in tokens:
         if status.startswith("D"):
             removed.append(next(tokens))
@@ -125,22 +140,23 @@ def parse_deleted(raw):
     return removed
 
 
-def diff_stats(checkout, base, head):
+def diff_stats(checkout: Path, base: str, head: str) -> tuple[list[Row], list[str]]:
     """Return (rows, deleted) for base..head, read with -z so paths stay unquoted."""
     span = f"{base}..{head}"
     rows = parse_numstat(sh("git", "diff", "-z", "-M", "--numstat", span, cwd=checkout))
-    deleted = parse_deleted(sh("git", "diff", "-z", "-M", "--name-status",
-                               "--diff-filter=DR", span, cwd=checkout))
+    deleted = parse_deleted(
+        sh("git", "diff", "-z", "-M", "--name-status", "--diff-filter=DR", span, cwd=checkout)
+    )
     return rows, deleted
 
 
-def classify(rows, deleted):
+def classify(rows: Sequence[Row], deleted: Sequence[str]) -> tuple[str, int, int, list[str]]:
     """Return (tier, lines, files, escalations) for parse_numstat rows.
 
     Size uses the destination path; escalation checks every path.
     """
     lines = files = 0
-    paths = []
+    paths: list[str] = []
     for added, removed, names in rows:
         paths += names
         if IGNORED.search(names[-1]) or TEST.search(names[-1]):
@@ -149,8 +165,9 @@ def classify(rows, deleted):
         if added != "-":
             lines += int(added) + int(removed)
     hits = sorted(
-        name for name, pattern in ESCALATIONS.items()
-        if any(re.search(pattern, p, re.I) for p in paths)
+        name
+        for name, pattern in ESCALATIONS.items()
+        if any(re.search(pattern, p, re.IGNORECASE) for p in paths)
     )
     if any(TEST.search(p) for p in deleted):
         hits.append("deleted-tests")
@@ -161,7 +178,7 @@ def classify(rows, deleted):
     return ("M+" if hits else "M"), lines, files, hits
 
 
-def validate(review):
+def validate(review: Review) -> Review:
     """Reject output that breaks the schema or rules it cannot express.
 
     Check statuses come from the blockers, not the model: a model may fail a
@@ -172,9 +189,13 @@ def validate(review):
     if any(s not in ("pass", "fail", "n/a") for s in review["checks"].values()):
         raise ValueError("check status must be pass, fail, or n/a")
     for f in review["findings"]:
-        if (set(f) != FIELDS or f["check"] not in CHECKS
-                or f["severity"] not in SEVERITIES or f["category"] not in CATEGORIES
-                or not isinstance(f["line"], int)):
+        if (
+            set(f) != FIELDS
+            or f["check"] not in CHECKS
+            or f["severity"] not in SEVERITIES
+            or f["category"] not in CATEGORIES
+            or not isinstance(f["line"], int)
+        ):
             raise ValueError(f"finding does not match the schema: {f}")
     sync_checks(review)
     kept, nits = [], 0
@@ -186,7 +207,7 @@ def validate(review):
     return review
 
 
-def sync_checks(review):
+def sync_checks(review: Review) -> None:
     """Fail exactly the checks that still have a blocker."""
     blocked = {f["check"] for f in review["findings"] if f["severity"] == "blocker"}
     for check, status in review["checks"].items():
@@ -196,14 +217,14 @@ def sync_checks(review):
             review["checks"][check] = "pass"
 
 
-def fits(f):
+def fits(f: Finding) -> bool:
     """Whether a blocker's category fits its check and, for a gate, its path."""
     if f["check"] not in FITS.get(f["category"], ()):
         return False
     return f["category"] != "weakened-gate" or any(p.search(f["path"]) for p in GATE_PATHS)
 
 
-def downgrade(review):
+def downgrade(review: Review) -> int:
     """Turn blockers whose reason is missing or does not fit into should-fix.
     Return the count."""
     count = 0
@@ -215,35 +236,48 @@ def downgrade(review):
     return count
 
 
-def recheck_schema():
+def recheck_schema() -> dict[str, Any]:
     """The review schema plus one status for each earlier finding."""
-    schema = json.loads(SCHEMA.read_text())
+    schema: dict[str, Any] = json.loads(SCHEMA.read_text())
     schema["required"].append("earlier")
-    schema["properties"]["earlier"] = {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["id", "status", "note"],
-        "properties": {"id": {"type": "integer"},
-                       "status": {"type": "string", "enum": STATUSES},
-                       "note": {"type": "string"}},
-    }}
+    schema["properties"]["earlier"] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["id", "status", "note"],
+            "properties": {
+                "id": {"type": "integer"},
+                "status": {"type": "string", "enum": STATUSES},
+                "note": {"type": "string"},
+            },
+        },
+    }
     return schema
 
 
-def load_earlier(path, repo, pr):
+def load_earlier(path: Path, repo: str, pr: int) -> Earlier:
     """Return (run, findings) from an earlier finished review of the same PR."""
     run = json.loads((path / "run.json").read_text())
     review = path / "review.json"
-    if (run.get("repo"), run.get("pr"), run.get("status")) != (repo, pr, "ok") \
-            or not review.exists():
+    if (run.get("repo"), run.get("pr"), run.get("status")) != (repo, pr, "ok") or not review.exists():
         raise ValueError(f"{path} is not a finished review of {repo}#{pr}")
     return run, json.loads(review.read_text())["findings"]
 
 
-def is_ancestor(checkout, old, new):
-    return subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=checkout,
-                          capture_output=True).returncode == 0
+def is_ancestor(checkout: Path, old: str, new: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old, new],
+            cwd=checkout,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
-def follow_up_base(checkout, target, earlier, head):
+def follow_up_base(checkout: Path, target: str, earlier: str, head: str) -> str:
     """Return the tree or commit a follow-up diff starts from.
 
     If the branch merged the base branch after the earlier review, replay the
@@ -253,29 +287,38 @@ def follow_up_base(checkout, target, earlier, head):
     merge_base = sh("git", "merge-base", target, head, cwd=checkout).strip()
     if is_ancestor(checkout, merge_base, earlier):
         return earlier
-    replay = subprocess.run(["git", "merge-tree", "--write-tree", earlier, merge_base],
-                            cwd=checkout, capture_output=True, text=True)
+    replay = subprocess.run(
+        ["git", "merge-tree", "--write-tree", earlier, merge_base],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if replay.returncode != 0:
-        raise ValueError(f"earlier head {earlier} conflicts with the merged base branch; "
-                         "review the full PR")
+        raise ValueError(
+            f"earlier head {earlier} conflicts with the merged base branch; review the full PR"
+        )
     return replay.stdout.split("\n", 1)[0]
 
 
-def earlier_block(findings, head):
+def earlier_block(findings: list[Finding], head: str) -> str:
     """Describe the earlier findings for the follow-up prompt."""
-    lines = [f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
-             for i, f in enumerate(findings, 1)]
+    lines = [
+        f"{i}. [{f['severity']}] `{f['path']}:{f['line']}`: {f['problem']} Fix: {f['fix']}"
+        for i, f in enumerate(findings, 1)
+    ]
     return (
         f"<earlier_findings>\nThis is a follow-up review. The earlier review of commit "
         f"{head} reported the findings below. The diff holds only the commits since then.\n"
-        + "\n".join(lines or ["(none)"]) + "\n</earlier_findings>\n\n"
+        + "\n".join(lines or ["(none)"])
+        + "\n</earlier_findings>\n\n"
         "For each earlier finding, add an `earlier` entry with its number, `fixed` or "
         "`open`, and a one-sentence note. Report a new finding only for a defect the new "
         "commits introduce. Code the earlier review already saw is out of scope.\n"
     )
 
 
-def recheck(review, earlier, changed):
+def recheck(review: Review, earlier: list[Finding], changed: set[str]) -> dict[str, int]:
     """Merge earlier findings into a follow-up review. Return the status counts.
 
     Each earlier finding needs exactly one status. An open one comes back with
@@ -283,23 +326,31 @@ def recheck(review, earlier, changed):
     becomes a follow-up.
     """
     statuses = review.get("earlier")
-    if (not isinstance(statuses, list)
-            or any(not isinstance(s, dict) or set(s) != {"id", "status", "note"}
-                   or s["status"] not in STATUSES for s in statuses)
-            or sorted(s["id"] for s in statuses) != list(range(1, len(earlier) + 1))):
+    if (
+        not isinstance(statuses, list)
+        or any(
+            not isinstance(s, dict) or set(s) != {"id", "status", "note"} or s["status"] not in STATUSES
+            for s in statuses
+        )
+        or sorted(s["id"] for s in statuses) != list(range(1, len(earlier) + 1))
+    ):
         raise ValueError("earlier statuses must cover each earlier finding once")
     new = [f for f in review["findings"] if f["path"] in changed]
-    review["follow_ups"] += [f"{f['path']}:{f['line']}: {f['problem']}"
-                             for f in review["findings"] if f["path"] not in changed]
+    review["follow_ups"] += [
+        f"{f['path']}:{f['line']}: {f['problem']}"
+        for f in review["findings"]
+        if f["path"] not in changed
+    ]
     still_open = [dict(earlier[s["id"] - 1]) for s in statuses if s["status"] == "open"]
-    review["earlier"] = [dict(earlier[s["id"] - 1], status=s["status"], note=s["note"])
-                         for s in statuses]
+    review["earlier"] = [
+        dict(earlier[s["id"] - 1], status=s["status"], note=s["note"]) for s in statuses
+    ]
     review["findings"] = still_open + new
     sync_checks(review)
     return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
 
 
-def assess_follow_up(review, earlier, changed):
+def assess_follow_up(review: Review, earlier: list[Finding], changed: set[str]) -> dict[str, int]:
     """Validate a follow-up answer and merge in the earlier findings."""
     statuses = review.pop("earlier", None)
     validate(review)
@@ -307,7 +358,7 @@ def assess_follow_up(review, earlier, changed):
     return recheck(review, earlier, changed)
 
 
-def render(verdict, tier, escalations, review):
+def render(verdict: str, tier: str, escalations: list[str], review: Review) -> str:
     out = [f"**Verdict:** {verdict}", ""]
     label = tier + (f" ({', '.join(escalations)})" if escalations else "")
     out += [f"Review tier: {label}", ""]
@@ -330,34 +381,34 @@ def render(verdict, tier, escalations, review):
     return "\n".join(out) + "\n"
 
 
-def conclude(review, tier, escalations, run):
+def conclude(review: Review, tier: str, escalations: list[str], run: Run) -> str:
     """Apply downgrades, fill the run record, and return the comment."""
     run["downgraded"] = downgrade(review)
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
     run["verdict"] = "Changes needed" if blockers else "Ready to merge"
-    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"])
-                       for s in SEVERITIES}
+    run["findings"] = {s: sum(f["severity"] == s for f in review["findings"]) for s in SEVERITIES}
     return render(run["verdict"], tier, escalations, review)
 
 
-def format_checks(runs, statuses):
+def format_checks(runs: Sequence[Mapping[str, Any]], statuses: Sequence[Mapping[str, Any]]) -> str:
     """Summarize check runs and commit statuses as "name: result"."""
     results = [f"{r['name']}: {r['conclusion'] or r['status']}" for r in runs]
     results += [f"{st['context']}: {st['state']}" for st in statuses]
     return ", ".join(results) or "none"
 
 
-def ci_result(repo, head):
+def ci_result(repo: str, head: str) -> str:
     """Read CI for the pinned head, not whatever the PR points at now."""
-    def pages(path, key):
-        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}",
-                 "--jq", f".{key}[]")
+
+    def pages(path: str, key: str) -> list[dict[str, Any]]:
+        out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}", "--jq", f".{key}[]")
         return [json.loads(line) for line in out.splitlines()]
+
     return format_checks(pages("check-runs", "check_runs"), pages("status", "statuses"))
 
 
 @contextmanager
-def recorded(out, run):
+def recorded(out: Path, run: Run) -> Iterator[None]:
     """Write run.json when the block ends, with the error if it failed."""
     started = time.time()
     try:
@@ -371,31 +422,62 @@ def recorded(out, run):
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
-def run_reviewer(reviewer, checkout, prompt, out, schema):
+def run_reviewer(reviewer: str, checkout: Path, prompt: str, out: Path, schema: dict[str, Any]) -> Any:
+    """Run the model and return its raw answer; validate() checks the shape."""
     (out / "schema.json").write_text(json.dumps(schema, indent=2))
     if reviewer == "codex":
         with open(out / "log.txt", "w") as log:
             subprocess.run(
-                ["codex", "exec", "-C", str(checkout), "-s", "read-only", "--ephemeral",
-                 "--output-schema", str(out / "schema.json"), "-o", str(out / "raw.txt"), "-"],
-                input=prompt, text=True, stdout=log, stderr=log, check=True,
+                [
+                    "codex",
+                    "exec",
+                    "-C",
+                    str(checkout),
+                    "-s",
+                    "read-only",
+                    "--ephemeral",
+                    "--output-schema",
+                    str(out / "schema.json"),
+                    "-o",
+                    str(out / "raw.txt"),
+                    "-",
+                ],
+                input=prompt,
+                text=True,
+                stdout=log,
+                stderr=log,
+                check=True,
             )
         return json.loads((out / "raw.txt").read_text())
     # Claude has no OS sandbox here, so it gets no shell. It reads the saved
     # diff and repo files only.
     result = subprocess.run(
-        ["claude", "-p", "--output-format", "json",
-         "--json-schema", json.dumps(schema), "--add-dir", str(out),
-         "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
-         "--allowedTools", "Read,Grep,Glob"],
-        cwd=checkout, input=prompt, text=True, capture_output=True, check=True,
+        [
+            "claude",
+            "-p",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema),
+            "--add-dir",
+            str(out),
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit",
+            "--allowedTools",
+            "Read,Grep,Glob",
+        ],
+        cwd=checkout,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        check=True,
     )
     (out / "raw.txt").write_text(result.stdout)
     wrapper = json.loads(result.stdout)
     return wrapper.get("structured_output") or json.loads(wrapper["result"])
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("reviewer", choices=["codex", "claude"])
     ap.add_argument("repo")
@@ -405,8 +487,15 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
     args = ap.parse_args()
 
-    pr = gh_json("pr", "view", str(args.pr), "-R", args.repo,
-                 "--json", "state,body,baseRefName,headRefOid,closingIssuesReferences")
+    pr = gh_json(
+        "pr",
+        "view",
+        str(args.pr),
+        "-R",
+        args.repo,
+        "--json",
+        "state,body,baseRefName,headRefOid,closingIssuesReferences",
+    )
     if pr["state"] != "OPEN":
         sys.exit(f"PR #{args.pr} is {pr['state'].lower()}, not open")
     head = pr["headRefOid"]
@@ -414,7 +503,7 @@ def main():
     # GitHub only links closing issues for PRs into the default branch, so
     # fall back to the "Closes #N" line for PRs into staging.
     refs = pr["closingIssuesReferences"]
-    match = re.search(r"^closes #(\d+)", pr["body"], re.I | re.M)
+    match = re.search(r"^closes #(\d+)", pr["body"], re.IGNORECASE | re.MULTILINE)
     issue = refs[0]["number"] if refs else match and int(match.group(1))
     if not issue:
         sys.exit(f"PR #{args.pr} does not close an issue")
@@ -425,7 +514,7 @@ def main():
     if sh("git", "status", "--porcelain", cwd=args.checkout).strip():
         sys.exit(f"{args.checkout} has uncommitted changes")
     base = sh("git", "merge-base", f"origin/{pr['baseRefName']}", head, cwd=args.checkout).strip()
-    earlier = None
+    earlier: Earlier | None = None
     if args.since:
         try:
             earlier = load_earlier(args.since, args.repo, args.pr)
@@ -433,11 +522,9 @@ def main():
             sys.exit(str(e))
         earlier_head = earlier[0]["head"]
         if not is_ancestor(args.checkout, earlier_head, head):
-            sys.exit(f"earlier head {earlier_head} is not an ancestor of {head}; "
-                     "review the full PR")
+            sys.exit(f"earlier head {earlier_head} is not an ancestor of {head}; review the full PR")
         try:
-            base = follow_up_base(args.checkout, f"origin/{pr['baseRefName']}",
-                                  earlier_head, head)
+            base = follow_up_base(args.checkout, f"origin/{pr['baseRefName']}", earlier_head, head)
         except ValueError as e:
             sys.exit(str(e))
 
@@ -459,7 +546,10 @@ def main():
         changed = {p for _, _, names in rows for p in names}
         run.update(
             prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
-            tier=tier, lines=lines, files=files, escalations=escalations,
+            tier=tier,
+            lines=lines,
+            files=files,
+            escalations=escalations,
         )
         if args.dry_run:
             print(json.dumps(run, indent=2))
@@ -467,7 +557,7 @@ def main():
         finish(args, pr, issue, base, head, out, run, earlier, changed)
 
 
-def new_record(args, head, earlier):
+def new_record(args: argparse.Namespace, head: str, earlier: Earlier | None) -> Run:
     """Start the run record. A follow-up names its earlier run and counts rounds."""
     run = {"reviewer": args.reviewer, "repo": args.repo, "pr": args.pr, "head": head, "round": 1}
     if earlier:
@@ -475,7 +565,17 @@ def new_record(args, head, earlier):
     return run
 
 
-def finish(args, pr, issue, base, head, out, run, earlier, changed):
+def finish(
+    args: argparse.Namespace,
+    pr: dict[str, Any],
+    issue: int,
+    base: str,
+    head: str,
+    out: Path,
+    run: Run,
+    earlier: Earlier | None,
+    changed: set[str],
+) -> None:
     """Write the prompt, run the model, and write the comment."""
     tier, escalations = run["tier"], run["escalations"]
     if tier == "L":
@@ -492,12 +592,17 @@ def finish(args, pr, issue, base, head, out, run, earlier, changed):
         return
 
     values = {
-        "REPO": args.repo, "PR": str(args.pr), "BASE_SHA": base, "HEAD_SHA": head,
-        "DIFF_PATH": str(out / "diff.patch"), "TIER": tier,
+        "REPO": args.repo,
+        "PR": str(args.pr),
+        "BASE_SHA": base,
+        "HEAD_SHA": head,
+        "DIFF_PATH": str(out / "diff.patch"),
+        "TIER": tier,
         "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
         "CI_RESULT": ci_result(args.repo, head),
-        "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
-                         "--json", "body", "--jq", ".body").strip(),
+        "ISSUE_BODY": sh(
+            "gh", "issue", "view", str(issue), "-R", args.repo, "--json", "body", "--jq", ".body"
+        ).strip(),
         "PR_BODY": pr["body"].strip(),
         "EARLIER": earlier_block(earlier[1], earlier[0]["head"]) if earlier else "",
     }
