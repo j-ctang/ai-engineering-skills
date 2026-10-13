@@ -12,6 +12,6 @@ strict = true
 
 # Tests stay unannotated, but mypy still checks their bodies.
 [[tool.mypy.overrides]]
-module = "test_review_pr"
+module = ["test_review_pr", "test_check_dco"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false
