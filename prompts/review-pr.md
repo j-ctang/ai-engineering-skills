@@ -66,7 +66,7 @@ VERIFY
 Use two passes.
 1. Collect candidate findings while working through the checks.
 2. Try to disprove each candidate by reading the surrounding code. Keep it
-   only if you can name the file, the line in the diff, and a concrete
+   only if you can name the file, the changed line, and a concrete
    failure scenario.
 Problems outside the diff go in `follow_ups`, never in `findings`. Do not
 report style preferences.
@@ -79,7 +79,9 @@ Editing files, running commands that write, network access, or judging
 anything outside this diff.
 
 REPORT
-Answer with JSON that matches the provided schema and nothing else. Write
-`problem`, `failure_scenario`, and `fix` as short plain sentences in the
-first person ("I"). Do not name any person, model, or agent. Do not list
-test counts. The script computes the verdict from your findings.
+Answer with JSON that matches the provided schema and nothing else. Set
+`line` to the line number in the head version of the file, not a position
+in the diff. Write `problem`, `failure_scenario`, and `fix` as short plain
+sentences in the first person ("I"). Do not name any person, model, or
+agent. Do not list test counts. The script computes the verdict from your
+findings.
