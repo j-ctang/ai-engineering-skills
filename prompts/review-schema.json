@@ -28,7 +28,7 @@
           "severity": {"type": "string", "enum": ["blocker", "should-fix", "nit"]},
           "category": {"type": "string", "enum": ["wrong-behavior", "security", "weakened-gate", "unmet-acceptance", "none"]},
           "path": {"type": "string"},
-          "line": {"type": "integer"},
+          "line": {"type": "integer", "description": "Line number in the head version of the file, not a position in the diff."},
           "problem": {"type": "string"},
           "failure_scenario": {"type": "string"},
           "fix": {"type": "string"}
