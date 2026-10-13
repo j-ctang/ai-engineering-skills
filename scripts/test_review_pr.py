@@ -233,6 +233,23 @@ class RecordedTest(unittest.TestCase):
             pass
         self.assertEqual(self.record()["status"], "ok")
 
+    def test_failure_appends_record(self):
+        with self.assertRaisesRegex(ValueError, "bad JSON"):
+            with recorded(self.out, {"pr": 1}):
+                raise ValueError("bad JSON")
+        lines = (self.root / "runs.jsonl").read_text().splitlines()
+        self.assertEqual(len(lines), 1)
+        run = json.loads(lines[0])
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["error"], "ValueError: bad JSON")
+
+    def test_logging_failure_keeps_original_error(self):
+        self.root.write_text("not a directory")
+        with self.assertRaisesRegex(ValueError, "bad JSON"):
+            with recorded(self.out, {"pr": 1}):
+                raise ValueError("bad JSON")
+        self.assertEqual(self.record()["status"], "failed")
+
     def test_success_appends_matching_records(self):
         records = []
         for pr in (1, 2):

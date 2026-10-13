@@ -364,19 +364,25 @@ def ci_result(repo, head):
 def recorded(out, run):
     """Write run.json when the block ends, with the error if it failed."""
     started = time.time()
+    failed = False
     try:
         yield
         run.setdefault("status", "ok")
     except BaseException as e:
+        failed = True
         run.update(status="failed", error=f"{type(e).__name__}: {e}"[:500])
         raise
     finally:
         run["seconds"] = round(time.time() - started)
-        (out / "run.json").write_text(json.dumps(run, indent=2))
-    if run["status"] != "dry-run":
-        LOG_ROOT.mkdir(parents=True, exist_ok=True)
-        with (LOG_ROOT / "runs.jsonl").open("a") as log:
-            log.write(json.dumps(run) + "\n")
+        try:
+            (out / "run.json").write_text(json.dumps(run, indent=2))
+            if run["status"] != "dry-run":
+                LOG_ROOT.mkdir(parents=True, exist_ok=True)
+                with (LOG_ROOT / "runs.jsonl").open("a") as log:
+                    log.write(json.dumps(run) + "\n")
+        except Exception:
+            if not failed:
+                raise
 
 
 def run_reviewer(reviewer, checkout, prompt, out, schema):
