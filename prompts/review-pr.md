@@ -80,8 +80,9 @@ anything outside this diff.
 
 REPORT
 Answer with JSON that matches the provided schema and nothing else. Set
-`line` to the line number in the head version of the file, not a position
-in the diff. Write `problem`, `failure_scenario`, and `fix` as short plain
-sentences in the first person ("I"). Do not name any person, model, or
-agent. Do not list test counts. The script computes the verdict from your
-findings.
+`line` to the line number in the head version of the file. Line numbers
+shown while reading the diff file are positions in the patch, so read the
+file itself or count from the hunk header. Write `problem`,
+`failure_scenario`, and `fix` as short plain sentences in the first person
+("I"). Do not name any person, model, or agent. Do not list test counts.
+The script computes the verdict from your findings.
