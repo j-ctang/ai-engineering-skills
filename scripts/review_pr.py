@@ -2,7 +2,7 @@
 """Run an independent, read-only PR review with Codex or Claude.
 
 Usage: scripts/review_pr.py <codex|claude> <owner/repo> <pr> <checkout-dir>
-       [--since <earlier-run-dir>] [--dry-run]
+       [--since <earlier-run-dir>] [--dry-run] [--allow-pending]
 
 The script decides everything that can be decided mechanically: the pinned
 commit, the review tier, the output shape, and the verdict. The model only
@@ -350,13 +350,20 @@ def format_checks(runs, statuses):
     return ", ".join(results) or "none"
 
 
-def ci_result(repo, head):
+def ci_result(repo, head, allow_pending=False):
     """Read CI for the pinned head, not whatever the PR points at now."""
     def pages(path, key):
         out = sh("gh", "api", "--paginate", f"repos/{repo}/commits/{head}/{path}",
                  "--jq", f".{key}[]")
         return [json.loads(line) for line in out.splitlines()]
-    return format_checks(pages("check-runs", "check_runs"), pages("status", "statuses"))
+    runs = pages("check-runs", "check_runs")
+    statuses = pages("status", "statuses")
+    pending = [r["name"] for r in runs if r["status"] == "in_progress"]
+    pending += [s["context"] for s in statuses if s["state"] == "pending"]
+    if pending and not allow_pending:
+        sys.exit(f"CI is unfinished on head {head}: {', '.join(pending)}. "
+                 "Retry after CI finishes or use --allow-pending to review anyway.")
+    return format_checks(runs, statuses)
 
 
 @contextmanager
@@ -406,6 +413,7 @@ def main():
     ap.add_argument("checkout", type=Path)
     ap.add_argument("--since", type=Path, help="earlier run directory; review only newer commits")
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
+    ap.add_argument("--allow-pending", action="store_true", help="review even if CI is unfinished")
     args = ap.parse_args()
 
     pr = gh_json("pr", "view", str(args.pr), "-R", args.repo,
@@ -498,7 +506,7 @@ def finish(args, pr, issue, base, head, out, run, earlier, changed):
         "REPO": args.repo, "PR": str(args.pr), "BASE_SHA": base, "HEAD_SHA": head,
         "DIFF_PATH": str(out / "diff.patch"), "TIER": tier,
         "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
-        "CI_RESULT": ci_result(args.repo, head),
+        "CI_RESULT": ci_result(args.repo, head, allow_pending=args.allow_pending or args.dry_run),
         "ISSUE_BODY": sh("gh", "issue", "view", str(issue), "-R", args.repo,
                          "--json", "body", "--jq", ".body").strip(),
         "PR_BODY": pr["body"].strip(),

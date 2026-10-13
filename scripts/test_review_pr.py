@@ -189,6 +189,48 @@ class GitDiffTest(unittest.TestCase):
 
 
 class CiTest(unittest.TestCase):
+    def ci(self, runs, statuses, **kwargs):
+        pages = ["\n".join(json.dumps(r) for r in runs),
+                 "\n".join(json.dumps(s) for s in statuses)]
+        with mock.patch.object(review_pr, "sh", side_effect=pages):
+            return review_pr.ci_result("o/r", "abc123", **kwargs)
+
+    def test_in_progress_check_refuses_review(self):
+        runs = [{"name": "lint", "status": "in_progress", "conclusion": None}]
+        with self.assertRaisesRegex(SystemExit, "CI.*abc123.*lint.*--allow-pending"):
+            self.ci(runs, [])
+
+    def test_pending_commit_status_refuses_review(self):
+        with self.assertRaisesRegex(SystemExit, "CI.*abc123.*deploy"):
+            self.ci([], [{"context": "deploy", "state": "pending"}])
+
+    def test_finished_ci_allows_review(self):
+        runs = [{"name": "lint", "status": "completed", "conclusion": "failure"}]
+        statuses = [{"context": "deploy", "state": "success"}]
+        self.assertEqual(self.ci(runs, statuses), "lint: failure, deploy: success")
+
+    def test_allow_pending_reviews_anyway(self):
+        runs = [{"name": "lint", "status": "in_progress", "conclusion": None}]
+        statuses = [{"context": "deploy", "state": "pending"}]
+        self.assertEqual(self.ci(runs, statuses, allow_pending=True),
+                         "lint: in_progress, deploy: pending")
+
+    def test_dry_run_writes_prompt_with_pending_ci(self):
+        args = mock.Mock(repo="o/r", pr=3, dry_run=True, allow_pending=False)
+        run = {"tier": "S", "escalations": []}
+        runs = [{"name": "lint", "status": "in_progress", "conclusion": None}]
+        statuses = [{"context": "deploy", "state": "pending"}]
+        responses = [json.dumps(runs[0]), json.dumps(statuses[0]), "Issue body"]
+        with tempfile.TemporaryDirectory(dir=review_pr.HERE) as directory, \
+                mock.patch.object(review_pr, "sh", side_effect=responses), \
+                mock.patch.object(review_pr, "run_reviewer") as reviewer:
+            out = Path(directory)
+            review_pr.finish(args, {"body": "PR body"}, 1, "base", "abc123",
+                             out, run, None, set())
+            self.assertIn("lint: in_progress, deploy: pending",
+                          (out / "prompt.md").read_text())
+            reviewer.assert_not_called()
+
     def test_format_checks(self):
         runs = [{"name": "offline-check", "status": "completed", "conclusion": "success"},
                 {"name": "lint", "status": "in_progress", "conclusion": None}]
