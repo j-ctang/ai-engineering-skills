@@ -55,6 +55,9 @@ class ClassifyTest(unittest.TestCase):
             "scripts/check.sh": "test-gates",
             "src/auth/session.ts": "secrets",
             ".env.example": "secrets",
+            "scripts/review_pr.py": "review-gates",
+            "prompts/review-pr.md": "review-gates",
+            "prompts/review-schema.json": "review-gates",
         }
         for path, reason in cases.items():
             with self.subTest(path=path):
@@ -305,7 +308,8 @@ class DowngradeTest(unittest.TestCase):
         self.assertEqual(downgrade(validate(review)), 1)
 
     def test_weakened_gate_on_gate_paths_kept(self):
-        paths = ["scripts/test_a.py", ".github/workflows/ci.yml", "jest.config.js", "AGENTS.md"]
+        paths = ["scripts/test_a.py", ".github/workflows/ci.yml", "jest.config.js", "AGENTS.md",
+                 "scripts/review_pr.py", "prompts/review-pr.md"]
         review = {"checks": checks(safety="fail"),
                   "findings": [finding("blocker", "safety", "weakened-gate", p) for p in paths],
                   "follow_ups": []}
