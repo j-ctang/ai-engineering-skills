@@ -15,8 +15,10 @@ from review_pr import (
     earlier_block,
     follow_up_base,
     format_checks,
+    head_hunks,
     is_ancestor,
     load_earlier,
+    mark_lines,
     new_record,
     recheck,
     recheck_schema,
@@ -148,6 +150,15 @@ class GitDiffTest(unittest.TestCase):
         head = self.commit()
         tier, _, _, hits = classify(*diff_stats(self.repo, self.base, head))
         self.assertEqual((tier, hits), ("M+", ["ci"]))
+
+    def test_head_hunks_reads_quoted_paths(self):
+        names = ["src/\u00e9 b.ts", 'src/q"t.ts', "src/s p.ts"]
+        for name in names:
+            self.write(name, "a\n")
+        head = self.commit()
+        self.assertEqual(
+            head_hunks(self.git("diff", f"{self.base}..{head}")), {n: [(1, 1)] for n in names}
+        )
 
     def test_pure_move_counts_no_lines(self):
         self.git("mv", "src/big.ts", "src/moved.ts")
@@ -442,7 +453,7 @@ class RecheckTest(unittest.TestCase):
 
     def test_check_failed_by_open_earlier_blocker_accepted(self):
         review = self.review([status(1, "open"), status(2, "fixed")], correctness="fail")
-        self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}), {"fixed": 1, "open": 1})
+        self.assertEqual(assess_follow_up(review, self.earlier, {"a.ts"}, {}), {"fixed": 1, "open": 1})
         run: review_pr.Run = {}
         conclude(review, "S", [], run)
         self.assertEqual(run["verdict"], "Changes needed")
@@ -451,7 +462,7 @@ class RecheckTest(unittest.TestCase):
         bad = dict(finding("nit"), severity="critical")
         with self.assertRaises(ValueError):
             assess_follow_up(
-                self.review([status(1, "open"), status(2, "fixed")], [bad]), self.earlier, {"a.ts"}
+                self.review([status(1, "open"), status(2, "fixed")], [bad]), self.earlier, {"a.ts"}, {}
             )
 
     def test_missing_status_rejected(self):
@@ -567,6 +578,90 @@ class LoadEarlierTest(unittest.TestCase):
                 self.write(run, findings)
                 with self.assertRaises(ValueError):
                     load_earlier(self.out, "o/r", 3)
+
+
+DIFF = """diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -10,3 +10,4 @@ function f() {
+ x
++y
+ z
+ w
+@@ -40 +41 @@
+-old
++new
+@@ -60,2 +60,0 @@
+-gone
+-gone
+diff --git a/src/gone.ts b/src/gone.ts
+deleted file mode 100644
+--- a/src/gone.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-a
+-b
+"""
+
+
+def at(path, line):
+    return dict(finding("should-fix"), path=path, line=line)
+
+
+class LineCheckTest(unittest.TestCase):
+    def test_head_hunks(self):
+        self.assertEqual(head_hunks(DIFF), {"src/a.ts": [(10, 13), (41, 41)]})
+
+    def test_added_line_like_a_header_stays_in_its_file(self):
+        diff = "--- a/x.md\n+++ b/x.md\n@@ -1,0 +1,2 @@\n+++ looks like a header\n+b\n@@ -9 +10 @@\n-c\n+d\n"
+        self.assertEqual(head_hunks(diff), {"x.md": [(1, 2), (10, 10)]})
+
+    def test_hunk_lines_like_headers_stay_in_their_file(self):
+        diff = "--- a/x.md\n+++ b/x.md\n@@ -1,2 +1,2 @@\n--- old\n+++ new\n a\n@@ -9 +9 @@\n-c\n+d\n"
+        self.assertEqual(head_hunks(diff), {"x.md": [(1, 2), (9, 9)]})
+
+    def test_control_characters_do_not_split_lines(self):
+        diff = "--- a/x.md\n+++ b/x.md\n@@ -1 +1 @@\n-a\v\n+b\f\n--- a/y.md\n+++ b/y.md\n@@ -3 +3 @@\n-c\n+d\n"
+        self.assertEqual(head_hunks(diff), {"x.md": [(1, 1)], "y.md": [(3, 3)]})
+
+    def test_line_in_hunk_not_flagged(self):
+        findings = [at("src/a.ts", 13), at("src/a.ts", 41)]
+        self.assertEqual(mark_lines(findings, head_hunks(DIFF)), 0)
+        self.assertTrue(all("line_check" not in f for f in findings))
+
+    def test_line_outside_hunks_flagged(self):
+        findings = [at("src/a.ts", 35)]
+        self.assertEqual(mark_lines(findings, head_hunks(DIFF)), 1)
+        self.assertEqual(findings[0]["line_check"], "outside-diff")
+
+    def test_file_with_no_hunks_flagged(self):
+        findings = [at("src/gone.ts", 1), at("src/other.ts", 5)]
+        self.assertEqual(mark_lines(findings, head_hunks(DIFF)), 2)
+
+    def test_run_record_and_comment_show_flag(self):
+        review = {
+            "checks": checks(),
+            "findings": [at("src/a.ts", 11), at("src/a.ts", 35)],
+            "follow_ups": [],
+        }
+        mark_lines(review["findings"], head_hunks(DIFF))
+        run: review_pr.Run = {}
+        comment = conclude(review, "S", [], run)
+        self.assertEqual(run["outside_diff"], ["src/a.ts:35"])
+        self.assertIn("`src/a.ts:35`: P. X. (line not in the diff)", comment)
+        self.assertNotIn("`src/a.ts:11`: P. X. (line", comment)
+
+    def test_follow_up_checks_only_new_findings(self):
+        earlier = [at("src/a.ts", 35)]
+        review = {
+            "checks": checks(),
+            "findings": [at("src/a.ts", 36)],
+            "follow_ups": [],
+            "earlier": [status(1, "open")],
+        }
+        assess_follow_up(review, earlier, {"src/a.ts"}, head_hunks(DIFF))
+        self.assertEqual([f.get("line_check") for f in review["findings"]], [None, "outside-diff"])
 
 
 if __name__ == "__main__":

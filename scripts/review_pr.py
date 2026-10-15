@@ -75,6 +75,7 @@ GATE_PATHS = [TEST] + [
 ]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
+HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 TIER_INSTRUCTIONS = {
     "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
@@ -205,6 +206,52 @@ def validate(review: Review) -> Review:
             kept.append(f)
     review["findings"] = kept
     return review
+
+
+def head_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
+    """Map each file in a unified diff to its head-side hunk line ranges.
+
+    A deleted file is left out. A hunk that only removes lines adds no range.
+    Hunk bodies are skipped by their line counts, so a body line that looks
+    like a file header cannot start a new file.
+    """
+    hunks: dict[str, list[tuple[int, int]]] = {}
+    ranges: list[tuple[int, int]] = []
+    old_left = new_left = 0
+    for line in diff.split("\n"):
+        if old_left or new_left:
+            old_left -= line[:1] in " -"
+            new_left -= line[:1] in " +"
+        elif line.startswith("+++ "):
+            ranges = hunks.setdefault(diff_path(line[4:]), [])
+        elif match := HUNK.match(line):
+            old_left, start, new_left = int(match[1] or 1), int(match[2]), int(match[3] or 1)
+            if new_left:
+                ranges.append((start, start + new_left - 1))
+    hunks.pop("/dev/null", None)
+    return hunks
+
+
+def diff_path(name: str) -> str:
+    """Decode a ---/+++ header path: drop git's tab and quoting, then "b/"."""
+    name = name.removesuffix("\t")
+    if name.startswith('"'):
+        name = name[1:-1].encode().decode("unicode_escape").encode("latin-1").decode()
+    return name.removeprefix("b/")
+
+
+def mark_lines(findings: list[Finding], hunks: Mapping[str, list[tuple[int, int]]]) -> int:
+    """Flag findings whose line is outside every head-side hunk of their file.
+
+    Models sometimes cite a diff position instead of a file line, so a flagged
+    line needs checking before anyone trusts it. Return the count.
+    """
+    count = 0
+    for f in findings:
+        if not any(lo <= f["line"] <= hi for lo, hi in hunks.get(f["path"], ())):
+            f["line_check"] = "outside-diff"
+            count += 1
+    return count
 
 
 def sync_checks(review: Review) -> None:
@@ -350,10 +397,16 @@ def recheck(review: Review, earlier: list[Finding], changed: set[str]) -> dict[s
     return {s: sum(f["status"] == s for f in review["earlier"]) for s in STATUSES}
 
 
-def assess_follow_up(review: Review, earlier: list[Finding], changed: set[str]) -> dict[str, int]:
+def assess_follow_up(
+    review: Review,
+    earlier: list[Finding],
+    changed: set[str],
+    hunks: Mapping[str, list[tuple[int, int]]],
+) -> dict[str, int]:
     """Validate a follow-up answer and merge in the earlier findings."""
     statuses = review.pop("earlier", None)
     validate(review)
+    mark_lines(review["findings"], hunks)
     review["earlier"] = statuses
     return recheck(review, earlier, changed)
 
@@ -374,7 +427,8 @@ def render(verdict: str, tier: str, escalations: list[str], review: Review) -> s
     if not findings:
         out.append("No blocking findings.")
     for f in findings:
-        out.append(f"- **{f['severity']}** `{f['path']}:{f['line']}`: {f['problem']} {f['fix']}")
+        flag = " (line not in the diff)" if f.get("line_check") == "outside-diff" else ""
+        out.append(f"- **{f['severity']}** `{f['path']}:{f['line']}`: {f['problem']} {f['fix']}{flag}")
     if review["follow_ups"]:
         out += ["", "Follow-ups (outside this PR):"]
         out += [f"- {item}" for item in review["follow_ups"]]
@@ -387,6 +441,9 @@ def conclude(review: Review, tier: str, escalations: list[str], run: Run) -> str
     blockers = any(f["severity"] == "blocker" for f in review["findings"])
     run["verdict"] = "Changes needed" if blockers else "Ready to merge"
     run["findings"] = {s: sum(f["severity"] == s for f in review["findings"]) for s in SEVERITIES}
+    run["outside_diff"] = [
+        f"{f['path']}:{f['line']}" for f in review["findings"] if f.get("line_check") == "outside-diff"
+    ]
     return render(run["verdict"], tier, escalations, review)
 
 
@@ -615,10 +672,11 @@ def finish(
 
     schema = recheck_schema() if earlier else json.loads(SCHEMA.read_text())
     review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    hunks = head_hunks((out / "diff.patch").read_text())
     if earlier:
-        run["earlier"] = assess_follow_up(review, earlier[1], changed)
+        run["earlier"] = assess_follow_up(review, earlier[1], changed, hunks)
     else:
-        validate(review)
+        mark_lines(validate(review)["findings"], hunks)
     comment = conclude(review, tier, escalations, run)
     (out / "review.json").write_text(json.dumps(review, indent=2))
     (out / "comment.md").write_text(comment)
