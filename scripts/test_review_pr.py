@@ -151,6 +151,15 @@ class GitDiffTest(unittest.TestCase):
         tier, _, _, hits = classify(*diff_stats(self.repo, self.base, head))
         self.assertEqual((tier, hits), ("M+", ["ci"]))
 
+    def test_head_hunks_reads_quoted_paths(self):
+        names = ["src/\u00e9 b.ts", 'src/q"t.ts', "src/s p.ts"]
+        for name in names:
+            self.write(name, "a\n")
+        head = self.commit()
+        self.assertEqual(
+            head_hunks(self.git("diff", f"{self.base}..{head}")), {n: [(1, 1)] for n in names}
+        )
+
     def test_pure_move_counts_no_lines(self):
         self.git("mv", "src/big.ts", "src/moved.ts")
         head = self.commit()
@@ -607,6 +616,10 @@ class LineCheckTest(unittest.TestCase):
     def test_added_line_like_a_header_stays_in_its_file(self):
         diff = "--- a/x.md\n+++ b/x.md\n@@ -1,0 +1,2 @@\n+++ looks like a header\n+b\n@@ -9 +10 @@\n-c\n+d\n"
         self.assertEqual(head_hunks(diff), {"x.md": [(1, 2), (10, 10)]})
+
+    def test_hunk_lines_like_headers_stay_in_their_file(self):
+        diff = "--- a/x.md\n+++ b/x.md\n@@ -1,2 +1,2 @@\n--- old\n+++ new\n a\n@@ -9 +9 @@\n-c\n+d\n"
+        self.assertEqual(head_hunks(diff), {"x.md": [(1, 2), (9, 9)]})
 
     def test_line_in_hunk_not_flagged(self):
         findings = [at("src/a.ts", 13), at("src/a.ts", 41)]

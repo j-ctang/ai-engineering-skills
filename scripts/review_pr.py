@@ -75,7 +75,7 @@ GATE_PATHS = [TEST] + [
 ]
 FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_scenario", "fix"}
 STATUSES = ["fixed", "open"]
-HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 TIER_INSTRUCTIONS = {
     "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
@@ -212,21 +212,32 @@ def head_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
     """Map each file in a unified diff to its head-side hunk line ranges.
 
     A deleted file is left out. A hunk that only removes lines adds no range.
+    Hunk bodies are skipped by their line counts, so a body line that looks
+    like a file header cannot start a new file.
     """
     hunks: dict[str, list[tuple[int, int]]] = {}
     ranges: list[tuple[int, int]] = []
-    previous = ""
+    old_left = new_left = 0
     for line in diff.splitlines():
-        # An added line can start with "++ ", so a header must follow "--- ".
-        if line.startswith("+++ ") and previous.startswith("--- "):
-            ranges = hunks.setdefault(line[4:].strip('"').removeprefix("b/"), [])
+        if old_left or new_left:
+            old_left -= line[:1] in " -"
+            new_left -= line[:1] in " +"
+        elif line.startswith("+++ "):
+            ranges = hunks.setdefault(diff_path(line[4:]), [])
         elif match := HUNK.match(line):
-            start, count = int(match.group(1)), int(match.group(2) or 1)
-            if count:
-                ranges.append((start, start + count - 1))
-        previous = line
+            old_left, start, new_left = int(match[1] or 1), int(match[2]), int(match[3] or 1)
+            if new_left:
+                ranges.append((start, start + new_left - 1))
     hunks.pop("/dev/null", None)
     return hunks
+
+
+def diff_path(name: str) -> str:
+    """Decode a ---/+++ header path: drop git's tab and quoting, then "b/"."""
+    name = name.removesuffix("\t")
+    if name.startswith('"'):
+        name = name[1:-1].encode().decode("unicode_escape").encode("latin-1").decode()
+    return name.removeprefix("b/")
 
 
 def mark_lines(findings: list[Finding], hunks: Mapping[str, list[tuple[int, int]]]) -> int:
