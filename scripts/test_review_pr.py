@@ -17,9 +17,11 @@ from review_pr import (
     format_checks,
     head_hunks,
     is_ancestor,
+    issue_body,
     load_earlier,
     mark_lines,
     new_record,
+    promote_merges,
     recheck,
     recheck_schema,
     recorded,
@@ -82,6 +84,11 @@ class ClassifyTest(unittest.TestCase):
                 tier, _, _, hits = classify(numstat((3, 1, path)), [])
                 self.assertEqual(tier, "M+")
                 self.assertIn(reason, hits)
+
+    def test_promote_is_never_refused_for_size(self):
+        tier, lines, _, _ = classify(numstat((400, 0, "src/a.ts")), [], promote=True)
+        self.assertEqual((tier, lines), ("P", 400))
+        self.assertIn("P", review_pr.TIER_INSTRUCTIONS)
 
     def test_rename_sides_both_checked(self):
         rows = [("0", "0", ("AGENTS.md", "docs/rules.md"))]
@@ -220,6 +227,28 @@ class GitDiffTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             follow_up_base(self.repo, "main", earlier, head)
 
+    def test_promote_lists_first_parent_merges(self):
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "staging")
+        for name in ("a", "b"):
+            self.git("checkout", "-q", "-b", name)
+            self.commit_change(f"src/{name}.ts")
+            self.git("checkout", "-q", "staging")
+            self.git("merge", "-q", "--no-ff", "-m", f"Merge pull request #{name}", name)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(
+            promote_merges(self.repo, "main", head), ["Merge pull request #b", "Merge pull request #a"]
+        )
+
+    def test_promote_rejects_base_not_ancestor(self):
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "staging")
+        head = self.commit_change("src/s.ts")
+        self.git("checkout", "-q", "main")
+        self.commit_change("src/m.ts")
+        with self.assertRaises(ValueError):
+            promote_merges(self.repo, "main", head)
+
     def test_test_moved_between_test_paths_is_not_deleted(self):
         (self.repo / "tests").mkdir()
         self.git("mv", "test/a.test.ts", "tests/a.test.ts")
@@ -247,6 +276,24 @@ class CiTest(unittest.TestCase):
             urls, ["repos/o/r/commits/abc123/check-runs", "repos/o/r/commits/abc123/status"]
         )
         self.assertTrue(all("--paginate" in c.args for c in sh.call_args_list))
+
+
+class IssueBodyTest(unittest.TestCase):
+    def test_promote_needs_no_closing_issue(self):
+        pr = {"body": "No issue.", "closingIssuesReferences": []}
+        text = issue_body(pr, "o/r", ["Merge pull request #2", "Merge pull request #1"])
+        self.assertIn("- Merge pull request #2\n- Merge pull request #1", text)
+
+    def test_pr_without_closing_issue_rejected(self):
+        pr = {"body": "No issue.", "closingIssuesReferences": []}
+        with self.assertRaises(ValueError):
+            issue_body(pr, "o/r", None)
+
+    def test_closes_line_reads_the_issue(self):
+        pr = {"body": "Closes #7\n", "closingIssuesReferences": []}
+        with mock.patch.object(review_pr, "sh", return_value="Issue text.\n") as sh:
+            self.assertEqual(issue_body(pr, "o/r", None), "Issue text.")
+        self.assertIn("7", sh.call_args.args)
 
 
 class RecordedTest(unittest.TestCase):
