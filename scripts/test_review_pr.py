@@ -88,7 +88,9 @@ class ClassifyTest(unittest.TestCase):
     def test_promote_is_never_refused_for_size(self):
         tier, lines, _, _ = classify(numstat((400, 0, "src/a.ts")), [], promote=True)
         self.assertEqual((tier, lines), ("P", 400))
-        self.assertIn("P", review_pr.TIER_INSTRUCTIONS)
+        text = review_pr.TIER_INSTRUCTIONS["P"].format(escalations="ci, deleted-tests")
+        self.assertIn("ci, deleted-tests", text)
+        self.assertIn("weakened", text)
 
     def test_rename_sides_both_checked(self):
         rows = [("0", "0", ("AGENTS.md", "docs/rules.md"))]
@@ -239,6 +241,19 @@ class GitDiffTest(unittest.TestCase):
         self.assertEqual(
             promote_merges(self.repo, "main", head), ["Merge pull request #b", "Merge pull request #a"]
         )
+
+    def test_promote_lists_direct_commits_too(self):
+        self.git("branch", "-M", "main")
+        self.git("checkout", "-q", "-b", "staging")
+        self.write("src/direct.ts", "a\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "Squashed change (#9)")
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(promote_merges(self.repo, "main", head), ["Squashed change (#9)"])
+
+    def test_promote_with_nothing_to_promote_rejected(self):
+        with self.assertRaises(ValueError):
+            promote_merges(self.repo, self.base, self.base)
 
     def test_promote_rejects_base_not_ancestor(self):
         self.git("branch", "-M", "main")

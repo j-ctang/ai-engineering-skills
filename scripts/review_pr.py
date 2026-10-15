@@ -81,7 +81,7 @@ HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 PROMOTE_ACCEPTANCE = (
     "This PR promotes PRs that were each reviewed and merged alone. Acceptance: "
     "together they still work. No PR breaks a contract, caller, type, or test "
-    "that another PR relies on. Merged PRs:"
+    "that another PR relies on. Commits promoted:"
 )
 
 TIER_INSTRUCTIONS = {
@@ -102,7 +102,8 @@ TIER_INSTRUCTIONS = {
         "combination: a contract one PR changes and another relies on, a moved "
         "or renamed symbol with stale callers, types or fields that disagree "
         "across files, and tests from one PR that another PR breaks. Mark scope "
-        "and pr_hygiene n/a."
+        "and pr_hygiene n/a. Risky paths: ({escalations}). On those, still report "
+        "any deleted test or weakened check or gate, even if one PR made it alone."
     ),
 }
 
@@ -200,14 +201,18 @@ def classify(
 
 
 def promote_merges(checkout: Path, base: str, head: str) -> list[str]:
-    """Return the subjects of the merges a promote brings in, newest first.
+    """Return the subjects of the commits a promote brings in, newest first.
 
-    A promote must fast-forward, so the base has to be an ancestor of the head.
+    First-parent commits cover merged PRs, squash-merged PRs, and direct
+    commits. A promote must fast-forward, so the base has to be an ancestor of
+    the head.
     """
     if not is_ancestor(checkout, base, head):
         raise ValueError(f"{base} is not an ancestor of {head}; a promote must fast-forward")
-    out = sh("git", "log", "--first-parent", "--merges", "--format=%s", f"{base}..{head}", cwd=checkout)
-    return out.splitlines()
+    subjects = sh("git", "log", "--first-parent", "--format=%s", f"{base}..{head}", cwd=checkout)
+    if not subjects.strip():
+        raise ValueError(f"nothing to promote between {base} and {head}")
+    return subjects.splitlines()
 
 
 def issue_body(pr: Mapping[str, Any], repo: str, merges: list[str] | None) -> str:
