@@ -621,6 +621,10 @@ class LineCheckTest(unittest.TestCase):
         diff = "--- a/x.md\n+++ b/x.md\n@@ -1,2 +1,2 @@\n--- old\n+++ new\n a\n@@ -9 +9 @@\n-c\n+d\n"
         self.assertEqual(head_hunks(diff), {"x.md": [(1, 2), (9, 9)]})
 
+    def test_control_characters_do_not_split_lines(self):
+        diff = "--- a/x.md\n+++ b/x.md\n@@ -1 +1 @@\n-a\v\n+b\f\n--- a/y.md\n+++ b/y.md\n@@ -3 +3 @@\n-c\n+d\n"
+        self.assertEqual(head_hunks(diff), {"x.md": [(1, 1)], "y.md": [(3, 3)]})
+
     def test_line_in_hunk_not_flagged(self):
         findings = [at("src/a.ts", 13), at("src/a.ts", 41)]
         self.assertEqual(mark_lines(findings, head_hunks(DIFF)), 0)

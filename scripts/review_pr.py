@@ -218,7 +218,7 @@ def head_hunks(diff: str) -> dict[str, list[tuple[int, int]]]:
     hunks: dict[str, list[tuple[int, int]]] = {}
     ranges: list[tuple[int, int]] = []
     old_left = new_left = 0
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if old_left or new_left:
             old_left -= line[:1] in " -"
             new_left -= line[:1] in " +"
