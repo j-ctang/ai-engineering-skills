@@ -23,6 +23,9 @@ prod-level system being built. Agents use it to ship changes to a target repo.
 - Small PRs: one concern, under ~300 changed lines.
 - Every merge must be cheap to roll back.
 - Turn repeated mistakes into types, lints, and tests, not more prose.
+- A status that grants trust (review verdict, risk class) is posted by an
+  identity the implementer cannot use. Otherwise it can be forged.
+- Harness work needs a measured product bottleneck. Product PRs come first.
 
 ## Agents and machines
 
