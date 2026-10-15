@@ -31,6 +31,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
 SCHEMA = HERE / "prompts" / "review-schema.json"
+RUNS = Path("/tmp/review")
 
 # Files that do not count toward review size.
 IGNORED = re.compile(
@@ -637,7 +638,7 @@ def main() -> None:
 
     # One directory per run, so reruns and other repos never overwrite a record.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = Path("/tmp/review") / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
+    out = RUNS / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 

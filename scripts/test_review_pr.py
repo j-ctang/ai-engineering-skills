@@ -296,6 +296,97 @@ class IssueBodyTest(unittest.TestCase):
         self.assertIn("7", sh.call_args.args)
 
 
+class CliTest(unittest.TestCase):
+    """Run main() on a real promote branch; only GitHub and the model are stubbed."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        root = Path(self.dir.name)
+        self.origin, self.checkout = root / "origin", root / "checkout"
+        self.git(root, "init", "-q", "-b", "main", str(self.origin))
+        self.commit("README.md", "x\n")
+        self.git(self.origin, "checkout", "-q", "-b", "staging")
+        self.git(self.origin, "checkout", "-q", "-b", "feature")
+        self.commit("src/big.ts", "".join(f"line {i}\n" for i in range(400)))
+        self.git(self.origin, "checkout", "-q", "staging")
+        self.git(self.origin, "merge", "-q", "--no-ff", "-m", "Merge pull request #5", "feature")
+        self.head = self.git(self.origin, "rev-parse", "HEAD").strip()
+        self.git(root, "clone", "-q", str(self.origin), str(self.checkout))
+        self.git(self.checkout, "checkout", "-q", self.head)
+        self.runs = root / "runs"
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def git(self, cwd, *args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    def commit(self, path, text):
+        (self.origin / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.origin / path).write_text(text)
+        self.git(self.origin, "add", "-A")
+        self.git(self.origin, "commit", "-q", "-m", "c")
+
+    def main(self, *flags, body="Promote."):
+        pr = {
+            "state": "OPEN",
+            "body": body,
+            "baseRefName": "main",
+            "headRefOid": self.head,
+            "closingIssuesReferences": [],
+        }
+        review = {"checks": dict.fromkeys(review_pr.CHECKS, "pass"), "findings": [], "follow_ups": []}
+        argv = ["review_pr.py", "codex", "o/r", "1", str(self.checkout), *flags]
+        real_sh = review_pr.sh
+
+        def sh(*args, cwd=None):
+            return "Issue.\n" if args[0] == "gh" else real_sh(*args, cwd=cwd)
+
+        with (
+            mock.patch.object(review_pr, "sh", side_effect=sh),
+            mock.patch.object(review_pr, "RUNS", self.runs),
+            mock.patch.object(review_pr, "gh_json", return_value=pr),
+            mock.patch.object(review_pr, "ci_result", return_value="none"),
+            mock.patch.object(review_pr, "run_reviewer", return_value=review) as reviewer,
+            mock.patch("sys.argv", argv),
+            mock.patch("builtins.print"),
+        ):
+            try:
+                review_pr.main()
+            finally:
+                self.reviewer = reviewer
+        (run_dir,) = self.runs.iterdir()
+        return run_dir, json.loads((run_dir / "run.json").read_text())
+
+    def test_promote_reviews_with_merged_prs_as_acceptance(self):
+        run_dir, run = self.main("--promote")
+        self.assertEqual((run["status"], run["tier"], run["verdict"]), ("ok", "P", "Ready to merge"))
+        self.assertIn("- Merge pull request #5", (run_dir / "prompt.md").read_text())
+        self.reviewer.assert_called_once()
+
+    def test_promote_rejected_before_review_when_base_moved(self):
+        self.git(self.origin, "checkout", "-q", "main")
+        self.commit("src/hotfix.ts", "x\n")
+        with self.assertRaises(SystemExit):
+            self.main("--promote", body="Closes #3")
+        self.reviewer.assert_not_called()
+        self.assertFalse(self.runs.exists())
+
+    def test_without_promote_behavior_unchanged(self):
+        with self.assertRaises(SystemExit):
+            self.main()
+        self.reviewer.assert_not_called()
+        _, run = self.main(body="Closes #3")
+        self.assertEqual(run["tier"], "L")
+        self.reviewer.assert_not_called()
+
+
 class RecordedTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
