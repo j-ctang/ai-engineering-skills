@@ -31,6 +31,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
 SCHEMA = HERE / "prompts" / "review-schema.json"
+RUNS = Path("/tmp/review")
 
 # Files that do not count toward review size.
 IGNORED = re.compile(
@@ -77,6 +78,12 @@ FIELDS = {"check", "severity", "category", "path", "line", "problem", "failure_s
 STATUSES = ["fixed", "open"]
 HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
+PROMOTE_ACCEPTANCE = (
+    "This PR promotes PRs that were each reviewed and merged alone. Acceptance: "
+    "together they still work. No PR breaks a contract, caller, type, or test "
+    "that another PR relies on. Commits promoted:"
+)
+
 TIER_INSTRUCTIONS = {
     "S": "Small diff. Read the whole diff in one pass, then work through the checks.",
     "M": (
@@ -88,6 +95,15 @@ TIER_INSTRUCTIONS = {
         "time, read tests and callers, then do a separate safety pass over the "
         "risky paths: secrets, permissions, network access, dependency pinning, "
         "and any weakened check or gate."
+    ),
+    "P": (
+        "Promote of already-reviewed PRs, listed in the issue section. Do not "
+        "review each PR again. Report only problems that come from their "
+        "combination: a contract one PR changes and another relies on, a moved "
+        "or renamed symbol with stale callers, types or fields that disagree "
+        "across files, and tests from one PR that another PR breaks. Mark scope "
+        "and pr_hygiene n/a. Risky paths: ({escalations}). On those, still report "
+        "any deleted test or weakened check or gate, even if one PR made it alone."
     ),
 }
 
@@ -151,10 +167,13 @@ def diff_stats(checkout: Path, base: str, head: str) -> tuple[list[Row], list[st
     return rows, deleted
 
 
-def classify(rows: Sequence[Row], deleted: Sequence[str]) -> tuple[str, int, int, list[str]]:
+def classify(
+    rows: Sequence[Row], deleted: Sequence[str], promote: bool = False
+) -> tuple[str, int, int, list[str]]:
     """Return (tier, lines, files, escalations) for parse_numstat rows.
 
-    Size uses the destination path; escalation checks every path.
+    Size uses the destination path; escalation checks every path. A promote
+    gets tier P at any size: its PRs were reviewed alone and cannot be split.
     """
     lines = files = 0
     paths: list[str] = []
@@ -172,11 +191,44 @@ def classify(rows: Sequence[Row], deleted: Sequence[str]) -> tuple[str, int, int
     )
     if any(TEST.search(p) for p in deleted):
         hits.append("deleted-tests")
+    if promote:
+        return "P", lines, files, hits
     if lines > MEDIUM_LINES or files > MEDIUM_FILES:
         return "L", lines, files, hits
     if lines <= SMALL_LINES and files <= SMALL_FILES and not hits:
         return "S", lines, files, hits
     return ("M+" if hits else "M"), lines, files, hits
+
+
+def promote_merges(checkout: Path, base: str, head: str) -> list[str]:
+    """Return the subjects of the commits a promote brings in, newest first.
+
+    First-parent commits cover merged PRs, squash-merged PRs, and direct
+    commits. A promote must fast-forward, so the base has to be an ancestor of
+    the head.
+    """
+    if not is_ancestor(checkout, base, head):
+        raise ValueError(f"{base} is not an ancestor of {head}; a promote must fast-forward")
+    subjects = sh("git", "log", "--first-parent", "--format=%s", f"{base}..{head}", cwd=checkout)
+    if not subjects.strip():
+        raise ValueError(f"nothing to promote between {base} and {head}")
+    return subjects.splitlines()
+
+
+def issue_body(pr: Mapping[str, Any], repo: str, merges: list[str] | None) -> str:
+    """Return the acceptance source: the closed issue, or for a promote the merged PRs.
+
+    GitHub only links closing issues for PRs into the default branch, so fall
+    back to the "Closes #N" line for PRs into staging.
+    """
+    if merges is not None:
+        return PROMOTE_ACCEPTANCE + "".join(f"\n- {m}" for m in merges)
+    refs = pr["closingIssuesReferences"]
+    match = re.search(r"^closes #(\d+)", pr["body"], re.IGNORECASE | re.MULTILINE)
+    issue = refs[0]["number"] if refs else match and int(match.group(1))
+    if not issue:
+        raise ValueError("PR does not close an issue")
+    return sh("gh", "issue", "view", str(issue), "-R", repo, "--json", "body", "--jq", ".body").strip()
 
 
 def validate(review: Review) -> Review:
@@ -542,6 +594,7 @@ def main() -> None:
     ap.add_argument("checkout", type=Path)
     ap.add_argument("--since", type=Path, help="earlier run directory; review only newer commits")
     ap.add_argument("--dry-run", action="store_true", help="stop after writing the prompt")
+    ap.add_argument("--promote", action="store_true", help="review a staging-to-main promote")
     args = ap.parse_args()
 
     pr = gh_json(
@@ -557,20 +610,19 @@ def main() -> None:
         sys.exit(f"PR #{args.pr} is {pr['state'].lower()}, not open")
     head = pr["headRefOid"]
 
-    # GitHub only links closing issues for PRs into the default branch, so
-    # fall back to the "Closes #N" line for PRs into staging.
-    refs = pr["closingIssuesReferences"]
-    match = re.search(r"^closes #(\d+)", pr["body"], re.IGNORECASE | re.MULTILINE)
-    issue = refs[0]["number"] if refs else match and int(match.group(1))
-    if not issue:
-        sys.exit(f"PR #{args.pr} does not close an issue")
-
     sh("git", "fetch", "-q", "origin", pr["baseRefName"], head, cwd=args.checkout)
     if sh("git", "rev-parse", "HEAD", cwd=args.checkout).strip() != head:
         sys.exit(f"{args.checkout} is not checked out at PR head {head}")
     if sh("git", "status", "--porcelain", cwd=args.checkout).strip():
         sys.exit(f"{args.checkout} has uncommitted changes")
     base = sh("git", "merge-base", f"origin/{pr['baseRefName']}", head, cwd=args.checkout).strip()
+    try:
+        merges = (
+            promote_merges(args.checkout, f"origin/{pr['baseRefName']}", head) if args.promote else None
+        )
+        issue = issue_body(pr, args.repo, merges)
+    except ValueError as e:
+        sys.exit(f"PR #{args.pr}: {e}")
     earlier: Earlier | None = None
     if args.since:
         try:
@@ -591,7 +643,7 @@ def main() -> None:
 
     # One directory per run, so reruns and other repos never overwrite a record.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = Path("/tmp/review") / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
+    out = RUNS / f"{args.repo.replace('/', '-')}-{args.pr}-{head[:7]}-{stamp}"
     out.mkdir(parents=True)
     (out / "diff.patch").write_text(diff)
 
@@ -599,7 +651,7 @@ def main() -> None:
     run = new_record(args, head, earlier)
     with recorded(out, run):
         rows, deleted = diff_stats(args.checkout, base, head)
-        tier, lines, files, escalations = classify(rows, deleted)
+        tier, lines, files, escalations = classify(rows, deleted, args.promote)
         changed = {p for _, _, names in rows for p in names}
         run.update(
             prompt_version=sh("git", "rev-parse", "--short", "HEAD", cwd=HERE).strip(),
@@ -625,7 +677,7 @@ def new_record(args: argparse.Namespace, head: str, earlier: Earlier | None) -> 
 def finish(
     args: argparse.Namespace,
     pr: dict[str, Any],
-    issue: int,
+    issue: str,
     base: str,
     head: str,
     out: Path,
@@ -657,9 +709,7 @@ def finish(
         "TIER": tier,
         "TIER_INSTRUCTIONS": TIER_INSTRUCTIONS[tier].format(escalations=", ".join(escalations)),
         "CI_RESULT": ci_result(args.repo, head),
-        "ISSUE_BODY": sh(
-            "gh", "issue", "view", str(issue), "-R", args.repo, "--json", "body", "--jq", ".body"
-        ).strip(),
+        "ISSUE_BODY": issue,
         "PR_BODY": pr["body"].strip(),
         "EARLIER": earlier_block(earlier[1], earlier[0]["head"]) if earlier else "",
     }
