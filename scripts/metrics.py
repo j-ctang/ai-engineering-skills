@@ -53,6 +53,7 @@ query($owner: String!, $name: String!, $endCursor: String) {
   }
 }
 """
+STAGES = ("first commit > open", "open > first review", "last commit > merge", "last Ready > merge")
 BOTS = re.compile(r"\[bot\]$|^coderabbitai$")
 
 
@@ -228,9 +229,7 @@ def report(
         "mixed": [f"{r['repo']}#{r['pr']}" for r in merged if r["mixed"]],
         "first_pass": {"ready": sum(r["first_pass"] for r in reviewed), "reviewed": len(reviewed)},
         "unreviewed": [f"{r['repo']}#{r['pr']}" for r in delivered if not r["reviewed"]],
-        "median_wait_min": {s: median([r["wait"][s] for r in delivered]) for s in delivered[0]["wait"]}
-        if delivered
-        else {},
+        "median_wait_min": {s: median([r["wait"][s] for r in delivered]) for s in STAGES},
         "reverts": [f"{r['repo']}#{r['pr']} by #{r['reverted_by']}" for r in reverted],
         "revert_rate": round(len(reverted) / len(delivered), 3) if delivered else None,
         "review_runs": {
@@ -242,22 +241,7 @@ def report(
 
 
 def render(rep: dict[str, Any]) -> str:
-    fp = rep["first_pass"]
-    lines = [
-        f"PR metrics {rep['since']} to {rep['until']}",
-        f"merged by kind: {rep['merged'] or 'none'}",
-        f"active days: {rep['active_days']}, merged per active day: {rep['merged_per_active_day']}",
-        f"lines by kind: {rep['lines']}",
-        f"first-pass: {fp['ready']}/{fp['reviewed']} reviewed product and harness PRs",
-        f"unreviewed: {', '.join(rep['unreviewed']) or 'none'}",
-        f"mixed product PRs: {', '.join(rep['mixed']) or 'none'}",
-        "median wait (min): " + ", ".join(f"{k} {v}" for k, v in rep["median_wait_min"].items()),
-        f"reverts: {', '.join(rep['reverts']) or 'none'} (rate {rep['revert_rate']})",
-        "review runs: {runs}, failed {failed}, model seconds {model_seconds}".format(
-            **rep["review_runs"]
-        ),
-    ]
-    return "\n".join(lines)
+    return "\n".join(f"{k.replace('_', ' ')}: {v}" for k, v in rep.items())
 
 
 def cache_dir() -> Path:

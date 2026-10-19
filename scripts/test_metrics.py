@@ -175,7 +175,7 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(rep["revert_rate"], 0.5)
         self.assertEqual(rep["review_runs"], {"runs": 2, "failed": 1, "model_seconds": 25})
         self.assertEqual(rep["active_days"], 1)
-        self.assertIn("first-pass: 1/1", metrics.render(rep))
+        self.assertIn("first pass: {'ready': 1, 'reviewed': 1}", metrics.render(rep))
 
     def test_empty_range(self):
         rep = report(self.rows(), [], date(2026, 1, 1), date(2026, 1, 2))
