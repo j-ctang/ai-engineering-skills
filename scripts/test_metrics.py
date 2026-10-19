@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import date
@@ -56,9 +57,9 @@ class ClassifyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "several kind"):
             classify("product", pr(labels=["kind:product", "kind:harness"]))
 
-    def test_planted_conflicting_kind_label_fails(self):
-        with self.assertRaisesRegex(ValueError, "conflicts"):
-            classify("product", pr(labels=["planted-bug", "kind:product"]))
+    def test_planted_wins_over_any_kind_label(self):
+        for extra in ("kind:product", "kind:infra"):
+            self.assertEqual(self.kind("product", pr(labels=["planted-bug", extra]))[0], "planted")
 
     def test_promote_and_sync_are_ops(self):
         self.assertEqual(self.kind("product", pr(base="main", head="staging"))[0], "ops")
@@ -80,10 +81,6 @@ class ClassifyTest(unittest.TestCase):
         self.assertTrue(classify("product", pr(paths=["src/a.ts", "AGENTS.md"]))["mixed"])
         self.assertFalse(classify("product", pr(paths=["src/a.ts"]))["mixed"])
         self.assertFalse(classify("harness", pr(paths=["src/a.ts", "AGENTS.md"]))["mixed"])
-
-    def test_truncated_file_list_is_marked(self):
-        p = pr(paths=["AGENTS.md"], changedFiles=150)
-        self.assertIn("truncated", classify("product", p)["rule"])
 
 
 class KindOfTest(unittest.TestCase):
@@ -147,7 +144,11 @@ class RevertTest(unittest.TestCase):
             pr(4, title="Undo log fix", body="Reverts j-ctang/x#2"),
             pr(5, title='Revert "Fix log"', mergedAt=None),
         ]
-        self.assertEqual(reverts(prs), {1: 3, 2: 4})
+        self.assertEqual(reverts("j-ctang/x", prs), {1: 3, 2: 4})
+
+    def test_body_naming_another_repo_is_ignored(self):
+        prs = [pr(1), pr(2, title="Undo", body="Reverts j-ctang/other#1")]
+        self.assertEqual(reverts("j-ctang/x", prs), {})
 
 
 class ReportTest(unittest.TestCase):
@@ -163,23 +164,26 @@ class ReportTest(unittest.TestCase):
 
     def test_counts_only_the_date_range(self):
         runs = [
-            {"repo": "o/p", "pr": 1, "status": "ok", "seconds": 20},
-            {"repo": "o/p", "pr": 1, "status": "failed", "seconds": 5},
-            {"repo": "o/p", "pr": 4, "status": "ok", "seconds": 30},
+            {"repo": "o/p", "pr": 1, "status": "ok", "seconds": 20, "day": "2026-10-14"},
+            {"repo": "o/p", "pr": 4, "status": "failed", "seconds": 5, "day": "2026-10-15"},
+            {"repo": "o/p", "pr": 1, "status": "ok", "seconds": 30, "day": "2026-10-09"},
+            {"repo": "o/p", "pr": 1, "status": "ok", "seconds": 40, "day": None},
         ]
         rep = report(self.rows(), runs, date(2026, 10, 10), date(2026, 10, 15))
         self.assertEqual(rep["merged"], {"product": 1, "harness": 1, "planted": 1})
-        self.assertEqual(rep["first_pass"], {"ready": 1, "reviewed": 1})
+        self.assertEqual(rep["first_pass"], {"ready": 1, "reviewed": 1, "rate": 1.0})
         self.assertEqual(rep["unreviewed"], ["o/h#2"])
         self.assertEqual(rep["reverts"], ["o/p#1 by #9"])
         self.assertEqual(rep["revert_rate"], 0.5)
         self.assertEqual(rep["review_runs"], {"runs": 2, "failed": 1, "model_seconds": 25})
         self.assertEqual(rep["active_days"], 1)
-        self.assertIn("first pass: {'ready': 1, 'reviewed': 1}", metrics.render(rep))
+        self.assertIn("first pass: {'ready': 1, 'reviewed': 1, 'rate': 1.0}", metrics.render(rep))
 
     def test_empty_range(self):
         rep = report(self.rows(), [], date(2026, 1, 1), date(2026, 1, 2))
-        self.assertEqual((rep["merged"], rep["revert_rate"]), ({}, None))
+        self.assertEqual(
+            (rep["merged"], rep["revert_rate"], rep["first_pass"]["rate"]), ({}, None, None)
+        )
         metrics.render(rep)
 
 
@@ -199,32 +203,78 @@ class CollectTest(unittest.TestCase):
             gh.assert_not_called()
             self.assertEqual(rows[0]["kind"], "harness")
 
-    def test_gh_is_retried(self):
+    def test_gh_is_retried_on_error_and_timeout(self):
         fail = mock.Mock(returncode=1, stderr="error connecting to api.github.com", stdout="")
-        node = {
-            "number": 1,
-            "labels": {"nodes": [{"name": "risk:low"}]},
-            "files": {"nodes": [{"path": "a"}]},
-            "commits": {"nodes": [{"commit": {"committedDate": "2026-10-14T09:00:00Z"}}]},
-            "comments": {"nodes": []},
-        }
-        page = {"data": {"repository": {"pullRequests": {"nodes": [node]}}}}
-        ok = mock.Mock(returncode=0, stdout=json.dumps([page]))
-        with mock.patch("subprocess.run", side_effect=[fail, ok]), mock.patch("builtins.print"):
-            (got,) = metrics.gh_prs("o/p", wait=0)
+        hang = subprocess.TimeoutExpired("gh", 120)
+        ok = mock.Mock(returncode=0, stdout="[1]")
+        with (
+            mock.patch("subprocess.run", side_effect=[fail, hang, ok]) as run,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(metrics.gh(["api", "x"], wait=0), [1])
+        self.assertEqual(run.call_args.kwargs["timeout"], 120)
+
+    def test_gh_gives_up(self):
+        fail = mock.Mock(returncode=1, stderr="boom", stdout="")
+        with (
+            mock.patch("subprocess.run", return_value=fail),
+            mock.patch("builtins.print"),
+            self.assertRaises(SystemExit),
+        ):
+            metrics.gh(["api", "x"], tries=2, wait=0)
+
+
+def node(n=1, files=1, comments=0, labels=1):
+    return {
+        "number": n,
+        "labels": {"totalCount": labels, "nodes": [{"name": "risk:low"}]},
+        "files": {"totalCount": files, "nodes": [{"path": "a"}]},
+        "first": {"nodes": [{"commit": {"committedDate": "2026-10-14T09:00:00Z"}}]},
+        "last": {"nodes": [{"commit": {"committedDate": "2026-10-14T11:00:00Z"}}]},
+        "comments": {"totalCount": comments, "nodes": []},
+    }
+
+
+class FlatTest(unittest.TestCase):
+    def test_unwraps_one_page(self):
+        page = {"data": {"repository": {"pullRequests": {"nodes": [node()]}}}}
+        with mock.patch.object(metrics, "gh", return_value=[page]) as gh:
+            (got,) = metrics.gh_prs("o/p")
+        gh.assert_called_once()
         self.assertEqual(got["labels"], [{"name": "risk:low"}])
-        self.assertEqual(got["commits"], [{"committedDate": "2026-10-14T09:00:00Z"}])
+        self.assertEqual([c["committedDate"][11:13] for c in got["commits"]], ["09", "11"])
+
+    def test_long_lists_are_fetched_in_full(self):
+        rest = {
+            "repos/o/p/pulls/1/files": [[{"filename": "a"}], [{"filename": "src/b.ts"}]],
+            "repos/o/p/issues/1/comments": [
+                [{"user": None, "created_at": "2026-10-14T10:00:00Z", "body": "x"}],
+                [{"user": {"login": "j-ctang"}, "created_at": "2026-10-14T11:00:00Z", "body": "y"}],
+            ],
+        }
+        with mock.patch.object(metrics, "gh", side_effect=lambda args: rest[args[-1]]):
+            got = metrics.flat("o/p", node(files=101, comments=101))
+        self.assertEqual([f["path"] for f in got["files"]], ["a", "src/b.ts"])
+        self.assertEqual([c["author"] for c in got["comments"]], [None, {"login": "j-ctang"}])
+
+    def test_too_many_labels_fails(self):
+        with self.assertRaisesRegex(ValueError, "labels"):
+            metrics.flat("o/p", node(labels=101))
 
 
 class LoadRunsTest(unittest.TestCase):
     def test_reads_run_records_and_skips_broken_ones(self):
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "a").mkdir()
-            (Path(d) / "a" / "run.json").write_text('{"pr": 1}')
+            (Path(d) / "o-p-1-abc-20261014-235959").mkdir()
+            (Path(d) / "o-p-1-abc-20261014-235959" / "run.json").write_text('{"pr": 1}')
+            (Path(d) / "odd").mkdir()
+            (Path(d) / "odd" / "run.json").write_text('{"pr": 2}')
             (Path(d) / "b").mkdir()
             (Path(d) / "b" / "run.json").write_text("{")
             with mock.patch("builtins.print"):
-                self.assertEqual(load_runs(Path(d)), [{"pr": 1}])
+                self.assertEqual(
+                    load_runs(Path(d)), [{"pr": 1, "day": "2026-10-14"}, {"pr": 2, "day": None}]
+                )
 
 
 if __name__ == "__main__":
