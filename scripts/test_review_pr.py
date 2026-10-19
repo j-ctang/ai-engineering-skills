@@ -26,12 +26,37 @@ from review_pr import (
     recheck_schema,
     recorded,
     render,
+    runs_root,
     validate,
 )
 
 
 def numstat(*rows):
     return [(str(a), str(r), (p,)) for a, r, p in rows]
+
+
+class RunsRootTest(unittest.TestCase):
+    def root(self, env):
+        with (
+            mock.patch.dict("os.environ", env, clear=True),
+            mock.patch.object(Path, "home", return_value=Path("/h")),
+        ):
+            return runs_root()
+
+    def test_default_is_durable_state_dir(self):
+        self.assertEqual(self.root({}), Path("/h/.local/state/review-runs"))
+
+    def test_xdg_state_home(self):
+        self.assertEqual(self.root({"XDG_STATE_HOME": "/s"}), Path("/s/review-runs"))
+
+    def test_override_wins(self):
+        env = {"XDG_STATE_HOME": "/s", "REVIEW_RUNS_DIR": "/r"}
+        self.assertEqual(self.root(env), Path("/r"))
+
+    def test_empty_values_are_ignored(self):
+        self.assertEqual(
+            self.root({"XDG_STATE_HOME": "", "REVIEW_RUNS_DIR": ""}), Path("/h/.local/state/review-runs")
+        )
 
 
 class ClassifyTest(unittest.TestCase):
