@@ -93,7 +93,11 @@ class ClassifyTest(unittest.TestCase):
             classify("product", big)
         self.assertEqual(self.kind("harness", big)[0], "harness")
         labelled = classify("product", {**big, "labels": [{"name": "kind:product"}]})
-        self.assertEqual((labelled["kind"], labelled["mixed"]), ("product", None))
+        self.assertEqual(
+            (labelled["kind"], labelled["mixed"]), ("product", True)
+        )  # AGENTS.md is visible
+        unseen = {**big, "files": [{"path": "src/a.ts"}], "labels": [{"name": "kind:product"}]}
+        self.assertIsNone(classify("product", unseen)["mixed"])
 
 
 class KindOfTest(unittest.TestCase):
@@ -132,6 +136,14 @@ class RowTest(unittest.TestCase):
         p = pr()
         w = row("o/p", p, classify("product", p), reviews)["wait"]
         self.assertEqual(w, {"open > first review": 30, "last Ready > merge": 60})
+
+    def test_reviews_after_the_merge_are_ignored(self):
+        p = pr()
+        late = [run("2026-10-14T11:00:00+00:00", "Changes needed"), run("2026-10-14T13:00:00+00:00")]
+        r = row("o/p", p, classify("product", p), late)
+        self.assertFalse(r["first_pass"])
+        self.assertIsNone(r["wait"]["last Ready > merge"])
+        self.assertEqual(r["wait"]["open > first review"], 60)
 
     def test_unreviewed_has_no_waits(self):
         p = pr()

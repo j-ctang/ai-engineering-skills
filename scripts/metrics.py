@@ -102,8 +102,8 @@ def classify(role: str, pr: Row) -> Row:
     return {
         "kind": kind,
         "rule": rule,
-        # None when the file list is cut: a kind: label can name the kind, not the mix.
-        "mixed": None if truncated else kind == "product" and bool(harness),
+        # A visible harness path proves a mix. Without one, a cut file list leaves it unknown.
+        "mixed": kind == "product" and (True if harness else None if truncated else False),
         "version": RULES_VERSION,
     }
 
@@ -122,6 +122,8 @@ def kind_of(kinds: Row, role: str, pr: Row) -> Row:
 def row(repo: str, pr: Row, k: Row, reviews: list[Row]) -> Row:
     """One PR's numbers. reviews are its completed review runs, oldest first."""
     created, merged = t(pr["createdAt"]), t(pr["mergedAt"])
+    # A review run after the merge (a recheck) did not gate delivery.
+    reviews = [r for r in reviews if merged is None or r["at"] <= merged]
     ready = [r for r in reviews if r["verdict"].startswith("Ready")]
     first = reviews[0] if reviews else None
     return {
