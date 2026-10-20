@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -540,6 +541,7 @@ def recorded(out: Path, run: Run) -> Iterator[None]:
         raise
     finally:
         run["seconds"] = round(time.time() - started)
+        run["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
@@ -733,7 +735,12 @@ def finish(
         return
 
     schema = recheck_schema() if earlier else json.loads(SCHEMA.read_text())
-    review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    started = time.monotonic()
+    try:
+        review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    finally:
+        # The model alone, apart from git, prompt, and checks: the quota-bearing part.
+        run["model_seconds"] = round(time.monotonic() - started)
     hunks = head_hunks((out / "diff.patch").read_text())
     if earlier:
         run["earlier"] = assess_follow_up(review, earlier[1], changed, hunks)
