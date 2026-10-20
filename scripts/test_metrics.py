@@ -163,6 +163,13 @@ class RevertTest(unittest.TestCase):
         prs = [pr(1), pr(2, title="Undo", body="Reverts j-ctang/other#1")]
         self.assertEqual(reverts("j-ctang/x", prs), {})
 
+    def test_foreign_body_still_allows_title_match(self):
+        prs = [
+            pr(1, title="Add cache"),
+            pr(2, title='Revert "Add cache"', body="Reverts j-ctang/other#5"),
+        ]
+        self.assertEqual(reverts("j-ctang/x", prs), {1: 2})
+
 
 class ReportTest(unittest.TestCase):
     def rows(self):
@@ -221,6 +228,15 @@ class CollectTest(unittest.TestCase):
             self.assertEqual((r["kind"], r["first_pass"]), ("harness", True))
             self.assertEqual(r["wait"]["last Ready > merge"], 60)
 
+    def test_offline_without_cache_fails(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(metrics, "REPOS", {"o/p": "product"}),
+            mock.patch.object(metrics, "cache_dir", return_value=Path(d)),
+            self.assertRaisesRegex(ValueError, "no cached PRs"),
+        ):
+            metrics.collect(offline=True, runs=[])
+
 
 class GhTest(unittest.TestCase):
     def test_retries_on_error_and_timeout(self):
@@ -236,6 +252,15 @@ class GhTest(unittest.TestCase):
         self.assertEqual(sub.call_args.kwargs["timeout"], 120)
         self.assertNotIn("commits", sub.call_args.args[0][-1])
         self.assertEqual([c.args for c in sleep.call_args_list], [(10,), (10,)])
+
+    def test_full_page_fails_instead_of_cutting_history(self):
+        ok = mock.Mock(returncode=0, stdout=json.dumps([{"number": n} for n in range(3)]))
+        with (
+            mock.patch("subprocess.run", return_value=ok),
+            mock.patch.object(metrics, "LIMIT", 3),
+            self.assertRaisesRegex(SystemExit, "raise LIMIT"),
+        ):
+            metrics.gh_prs("o/p")
 
     def test_gives_up(self):
         fail = mock.Mock(returncode=1, stderr="boom", stdout="")
@@ -253,7 +278,7 @@ class LoadRunsTest(unittest.TestCase):
             root = Path(d)
             for name, body in (
                 ("o-p-1-abc-20261014-120000", '{"pr": 1, "finished_at": "2026-10-14T20:00:00+00:00"}'),
-                ("o-p-2-abc-20261013-090000", '{"pr": 2}'),
+                ("o-p-2-abc-20261013-090000", '{"pr": 2, "seconds": 90}'),
                 ("odd", '{"pr": 3}'),
                 ("o-p-4-abc-20261012-090000", "{"),
             ):
@@ -263,7 +288,8 @@ class LoadRunsTest(unittest.TestCase):
                 runs = load_runs(root)
         self.assertEqual([r["pr"] for r in runs], [2, 1])
         self.assertEqual(runs[1]["at"].isoformat(), "2026-10-14T20:00:00+00:00")
-        self.assertEqual(runs[0]["at"].replace(tzinfo=None), datetime(2026, 10, 13, 9))
+        # Legacy finish time: directory start time plus the run's seconds.
+        self.assertEqual(runs[0]["at"].replace(tzinfo=None), datetime(2026, 10, 13, 9, 1, 30))
         self.assertIsNotNone(runs[0]["at"].tzinfo)
 
 

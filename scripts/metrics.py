@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,16 +42,19 @@ FIELDS = (
     "labels,additions,deletions,changedFiles,files"
 )
 STAGES = ("open > first review", "last Ready > merge")
+LIMIT = 1000  # gh pr list returns the newest first; a full page means older PRs were cut
 
 
 def gh_prs(repo: str, tries: int = 5, wait: float = 10) -> list[Row]:
     """Every PR of a repo. The GitHub API drops out or hangs for minutes at a time."""
-    cmd = ["gh", "pr", "list", "-R", repo, "--state", "all", "--limit", "1000", "--json", FIELDS]
+    cmd = ["gh", "pr", "list", "-R", repo, "--state", "all", "--limit", str(LIMIT), "--json", FIELDS]
     for attempt in range(1, tries + 1):
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
             if p.returncode == 0:
                 prs: list[Row] = json.loads(p.stdout)
+                if len(prs) >= LIMIT:
+                    sys.exit(f"{repo} has {LIMIT}+ PRs; raise LIMIT so older PRs are not cut")
                 return prs
             err = p.stderr.strip()
         except subprocess.TimeoutExpired:
@@ -142,9 +145,9 @@ def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
     for p in prs:
         if not p["mergedAt"]:
             continue
-        if m := REVERTS.search(p.get("body") or ""):
-            if m.group(1).lower() == repo.lower():  # a revert names its repo; others are not ours
-                out[int(m.group(2))] = p["number"]
+        m = REVERTS.search(p.get("body") or "")
+        if m and m.group(1).lower() == repo.lower():  # a revert names its repo; others are not ours
+            out[int(m.group(2))] = p["number"]
         elif (m := re.fullmatch(r'Revert "(.+)"', p["title"])) and m.group(1) in by_title:
             out[by_title[m.group(1)]] = p["number"]
     return out
@@ -152,7 +155,7 @@ def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
 
 def load_runs(root: Path) -> list[Row]:
     """Run records with an aware finish time. Old records lack finished_at; their
-    directory name holds the start time in local time."""
+    directory name holds the start time in local time, plus the run's seconds."""
     runs = []
     for f in sorted(root.glob("*/run.json")):
         try:
@@ -163,7 +166,8 @@ def load_runs(root: Path) -> list[Row]:
         if at := run.get("finished_at"):
             run["at"] = datetime.fromisoformat(at)
         elif m := STAMP.search(f.parent.name):
-            run["at"] = datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").astimezone()
+            started = datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").astimezone()
+            run["at"] = started + timedelta(seconds=run.get("seconds") or 0)
         else:
             continue
         runs.append(run)
@@ -234,6 +238,8 @@ def collect(offline: bool, runs: list[Row]) -> list[Row]:
     cache_dir().mkdir(parents=True, exist_ok=True)
     for repo, role in REPOS.items():
         path = cache_dir() / f"{repo.replace('/', '-')}.json"
+        if offline and not path.exists():
+            raise ValueError(f"no cached PRs for {repo}; run once without --offline")
         cache = json.loads(path.read_text()) if path.exists() else {"prs": [], "kinds": {}}
         if not offline:
             cache["prs"] = gh_prs(repo)
