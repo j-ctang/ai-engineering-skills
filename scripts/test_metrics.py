@@ -158,15 +158,18 @@ class RevertTest(unittest.TestCase):
         ]
         self.assertEqual(reverts("j-ctang/x", prs), {1: 3, 2: 4})
 
-    def test_repeated_title_reverts_the_latest_earlier_merge(self):
+    def test_title_match_needs_one_earlier_merge(self):
         prs = [
             pr(1, title="Fix log", mergedAt="2026-10-10T12:00:00Z"),
-            pr(2, title="Fix log", mergedAt="2026-10-12T12:00:00Z"),
-            pr(3, title='Revert "Fix log"', mergedAt="2026-10-13T12:00:00Z"),
-            pr(4, title="Fix log", mergedAt="2026-10-14T12:00:00Z"),
-            pr(5, title='Revert "Later"', mergedAt="2026-10-15T12:00:00Z"),
+            pr(2, title='Revert "Fix log"', mergedAt="2026-10-11T12:00:00Z"),
+            pr(3, title="Fix log", mergedAt="2026-10-12T12:00:00Z"),
+            pr(4, title='Revert "Fix log"', mergedAt="2026-10-13T12:00:00Z"),
+            pr(5, title="Fix log", mergedAt="2026-10-14T12:00:00Z"),
         ]
-        self.assertEqual(reverts("j-ctang/x", prs), {2: 3})
+        # #2 can only mean #1. #4 could mean #1 or #3, so it is skipped, not guessed.
+        with mock.patch("builtins.print") as warn:
+            self.assertEqual(reverts("j-ctang/x", prs), {1: 2})
+        self.assertIn("several PRs", warn.call_args.args[0])
 
     def test_body_naming_another_repo_is_ignored(self):
         prs = [pr(1), pr(2, title="Undo", body="Reverts j-ctang/other#1")]

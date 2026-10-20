@@ -152,10 +152,13 @@ def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
         for n in ours:
             out[n] = p["number"]
         if not ours and (m := re.fullmatch(r'Revert "(.+)"', p["title"])):
-            # Titles repeat; the revert undoes the latest PR with that title merged before it.
             earlier = [q for q in merged if q["title"] == m.group(1) and q["mergedAt"] < p["mergedAt"]]
-            if earlier:
-                out[earlier[-1]["number"]] = p["number"]
+            if len(earlier) == 1:
+                out[earlier[0]["number"]] = p["number"]
+            elif earlier:  # titles repeat; only a body reference can say which one
+                print(
+                    f"{repo}#{p['number']}: revert title matches several PRs; skipped", file=sys.stderr
+                )
     return out
 
 
