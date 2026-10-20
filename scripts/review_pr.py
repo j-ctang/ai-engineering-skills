@@ -6,8 +6,9 @@ Usage: scripts/review_pr.py <codex|claude> <owner/repo> <pr> <checkout-dir>
 
 The script decides everything that can be decided mechanically: the pinned
 commit, the review tier, the output shape, and the verdict. The model only
-reports findings. Each run gets its own directory under /tmp/review/ with
-diff.patch, prompt.md, review.json, comment.md, and run.json. Posting the
+reports findings. Each run gets its own directory under
+~/.local/state/review-runs/ ($XDG_STATE_HOME/review-runs, or $REVIEW_RUNS_DIR)
+with diff.patch, prompt.md, review.json, comment.md, and run.json. Posting the
 comment is a separate, deliberate step:
 gh pr comment <pr> -R <repo> -F <run-dir>/comment.md
 
@@ -19,6 +20,7 @@ findings in the new commits only.
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -31,7 +33,17 @@ from typing import Any
 HERE = Path(__file__).resolve().parent.parent
 PROMPT = HERE / "prompts" / "review-pr.md"
 SCHEMA = HERE / "prompts" / "review-schema.json"
-RUNS = Path("/tmp/review")
+
+
+def runs_root() -> Path:
+    """Return where run records live. Not /tmp: records must survive a reboot."""
+    if override := os.environ.get("REVIEW_RUNS_DIR"):
+        return Path(override)
+    state = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+    return Path(state) / "review-runs"
+
+
+RUNS = runs_root()
 
 # Files that do not count toward review size.
 IGNORED = re.compile(
