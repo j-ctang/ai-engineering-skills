@@ -2,6 +2,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -448,6 +449,19 @@ class RecordedTest(unittest.TestCase):
         with recorded(self.out, {"pr": 1}):
             pass
         self.assertEqual(self.record()["status"], "ok")
+
+    def test_records_finish_time_in_utc(self):
+        before = datetime.now(UTC).replace(microsecond=0)
+        for status in ({}, {"status": "dry-run"}):
+            with recorded(self.out, dict(status)):
+                pass
+            finished = datetime.fromisoformat(self.record()["finished_at"])
+            self.assertEqual(finished.utcoffset(), timedelta(0))
+            self.assertEqual(finished.microsecond, 0)
+            self.assertLessEqual(before, finished)
+        with self.assertRaises(ValueError), recorded(self.out, {}):
+            raise ValueError("boom")
+        self.assertIn("finished_at", self.record())
 
     def test_dry_run_status_kept(self):
         with recorded(self.out, {"status": "dry-run"}):

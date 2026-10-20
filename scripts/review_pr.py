@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -540,6 +541,7 @@ def recorded(out: Path, run: Run) -> Iterator[None]:
         raise
     finally:
         run["seconds"] = round(time.time() - started)
+        run["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         (out / "run.json").write_text(json.dumps(run, indent=2))
 
 
