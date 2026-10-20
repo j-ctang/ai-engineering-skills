@@ -145,10 +145,11 @@ def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
     for p in prs:
         if not p["mergedAt"]:
             continue
-        m = REVERTS.search(p.get("body") or "")
-        if m and m.group(1).lower() == repo.lower():  # a revert names its repo; others are not ours
-            out[int(m.group(2))] = p["number"]
-        elif (m := re.fullmatch(r'Revert "(.+)"', p["title"])) and m.group(1) in by_title:
+        # A revert body names each reverted PR with its repo; others are not ours.
+        ours = [int(n) for r, n in REVERTS.findall(p.get("body") or "") if r.lower() == repo.lower()]
+        for n in ours:
+            out[n] = p["number"]
+        if not ours and (m := re.fullmatch(r'Revert "(.+)"', p["title"])) and m.group(1) in by_title:
             out[by_title[m.group(1)]] = p["number"]
     return out
 

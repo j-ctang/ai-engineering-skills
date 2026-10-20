@@ -163,6 +163,11 @@ class RevertTest(unittest.TestCase):
         prs = [pr(1), pr(2, title="Undo", body="Reverts j-ctang/other#1")]
         self.assertEqual(reverts("j-ctang/x", prs), {})
 
+    def test_every_same_repo_body_reference_counts(self):
+        body = "Reverts j-ctang/other#8\nReverts j-ctang/x#1\nReverts j-ctang/x#2"
+        prs = [pr(1), pr(2), pr(3, title="Undo two", body=body)]
+        self.assertEqual(reverts("j-ctang/x", prs), {1: 3, 2: 3})
+
     def test_foreign_body_still_allows_title_match(self):
         prs = [
             pr(1, title="Add cache"),
