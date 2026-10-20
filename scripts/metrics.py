@@ -79,6 +79,7 @@ def classify(role: str, pr: Row) -> Row:
     paths = [f["path"] for f in pr.get("files") or []]
     harness = [p for p in paths if HARNESS_PATHS.search(p)]
     kind_labels = {lb.split(":", 1)[1] for lb in labels if lb.startswith("kind:")}
+    truncated = (pr.get("changedFiles") or 0) > len(paths)
     if "planted-bug" in labels:  # first match wins, so later labels are not checked
         return {"kind": "planted", "rule": "planted-bug label", "mixed": False, "version": RULES_VERSION}
     if unknown := kind_labels - set(KINDS):
@@ -91,7 +92,7 @@ def classify(role: str, pr: Row) -> Row:
         kind, rule = "ops", "promote or sync"
     elif role == "harness":
         kind, rule = "harness", "harness repo"
-    elif (pr.get("changedFiles") or 0) > len(paths):
+    elif truncated:
         # Only the path rule needs every file. The review size gate keeps PRs far below the cap.
         raise ValueError(f"PR #{pr['number']}: file list truncated; classify it with a kind: label")
     elif paths and len(harness) == len(paths):
@@ -101,7 +102,8 @@ def classify(role: str, pr: Row) -> Row:
     return {
         "kind": kind,
         "rule": rule,
-        "mixed": kind == "product" and bool(harness),
+        # None when the file list is cut: a kind: label can name the kind, not the mix.
+        "mixed": None if truncated else kind == "product" and bool(harness),
         "version": RULES_VERSION,
     }
 
@@ -140,7 +142,7 @@ def row(repo: str, pr: Row, k: Row, reviews: list[Row]) -> Row:
 
 def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
     """Map each reverted PR number to the merged PR that reverted it."""
-    by_title = {p["title"]: p["number"] for p in prs}
+    merged = sorted((p for p in prs if p["mergedAt"]), key=lambda p: p["mergedAt"])
     out = {}
     for p in prs:
         if not p["mergedAt"]:
@@ -149,8 +151,11 @@ def reverts(repo: str, prs: list[Row]) -> dict[int, int]:
         ours = [int(n) for r, n in REVERTS.findall(p.get("body") or "") if r.lower() == repo.lower()]
         for n in ours:
             out[n] = p["number"]
-        if not ours and (m := re.fullmatch(r'Revert "(.+)"', p["title"])) and m.group(1) in by_title:
-            out[by_title[m.group(1)]] = p["number"]
+        if not ours and (m := re.fullmatch(r'Revert "(.+)"', p["title"])):
+            # Titles repeat; the revert undoes the latest PR with that title merged before it.
+            earlier = [q for q in merged if q["title"] == m.group(1) and q["mergedAt"] < p["mergedAt"]]
+            if earlier:
+                out[earlier[-1]["number"]] = p["number"]
     return out
 
 
@@ -216,7 +221,8 @@ def report(rows: list[Row], runs: list[Row], since: date, until: date) -> Row:
         "review_runs": {
             "runs": len(rr),
             "failed": sum(x.get("status") == "failed" for x in rr),
-            "model_seconds": sum(x.get("seconds") or 0 for x in rr),
+            # Whole run (git, prompt, model, checks); the model dominates but is not timed alone.
+            "run_seconds": sum(x.get("seconds") or 0 for x in rr),
         },
     }
 

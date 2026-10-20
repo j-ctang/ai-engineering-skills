@@ -92,9 +92,8 @@ class ClassifyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "truncated"):
             classify("product", big)
         self.assertEqual(self.kind("harness", big)[0], "harness")
-        self.assertEqual(
-            self.kind("product", {**big, "labels": [{"name": "kind:product"}]})[0], "product"
-        )
+        labelled = classify("product", {**big, "labels": [{"name": "kind:product"}]})
+        self.assertEqual((labelled["kind"], labelled["mixed"]), ("product", None))
 
 
 class KindOfTest(unittest.TestCase):
@@ -153,11 +152,21 @@ class RevertTest(unittest.TestCase):
         prs = [
             pr(1, title="Add cache"),
             pr(2, title="Fix log"),
-            pr(3, title='Revert "Add cache"'),
+            pr(3, title='Revert "Add cache"', mergedAt="2026-10-15T12:00:00Z"),
             pr(4, title="Undo log fix", body="Reverts j-ctang/x#2"),
             pr(5, title='Revert "Fix log"', mergedAt=None),
         ]
         self.assertEqual(reverts("j-ctang/x", prs), {1: 3, 2: 4})
+
+    def test_repeated_title_reverts_the_latest_earlier_merge(self):
+        prs = [
+            pr(1, title="Fix log", mergedAt="2026-10-10T12:00:00Z"),
+            pr(2, title="Fix log", mergedAt="2026-10-12T12:00:00Z"),
+            pr(3, title='Revert "Fix log"', mergedAt="2026-10-13T12:00:00Z"),
+            pr(4, title="Fix log", mergedAt="2026-10-14T12:00:00Z"),
+            pr(5, title='Revert "Later"', mergedAt="2026-10-15T12:00:00Z"),
+        ]
+        self.assertEqual(reverts("j-ctang/x", prs), {2: 3})
 
     def test_body_naming_another_repo_is_ignored(self):
         prs = [pr(1), pr(2, title="Undo", body="Reverts j-ctang/other#1")]
@@ -171,7 +180,12 @@ class RevertTest(unittest.TestCase):
     def test_foreign_body_still_allows_title_match(self):
         prs = [
             pr(1, title="Add cache"),
-            pr(2, title='Revert "Add cache"', body="Reverts j-ctang/other#5"),
+            pr(
+                2,
+                title='Revert "Add cache"',
+                body="Reverts j-ctang/other#5",
+                mergedAt="2026-10-15T12:00:00Z",
+            ),
         ]
         self.assertEqual(reverts("j-ctang/x", prs), {1: 2})
 
@@ -200,7 +214,7 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(rep["unreviewed"], ["o/h#2"])
         self.assertEqual(rep["reverts"], ["o/p#1 by #9"])
         self.assertEqual(rep["revert_rate"], 0.5)
-        self.assertEqual(rep["review_runs"], {"runs": 2, "failed": 1, "model_seconds": 25})
+        self.assertEqual(rep["review_runs"], {"runs": 2, "failed": 1, "run_seconds": 25})
         self.assertEqual(rep["active_days"], 1)
         self.assertIn("first pass: {'ready': 1, 'reviewed': 1, 'rate': 1.0}", metrics.render(rep))
 
