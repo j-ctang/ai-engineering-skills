@@ -374,7 +374,7 @@ class CliTest(unittest.TestCase):
         self.git(self.origin, "add", "-A")
         self.git(self.origin, "commit", "-q", "-m", "c")
 
-    def main(self, *flags, body="Promote."):
+    def main(self, *flags, body="Promote.", model=None):
         pr = {
             "state": "OPEN",
             "body": body,
@@ -394,7 +394,9 @@ class CliTest(unittest.TestCase):
             mock.patch.object(review_pr, "RUNS", self.runs),
             mock.patch.object(review_pr, "gh_json", return_value=pr),
             mock.patch.object(review_pr, "ci_result", return_value="none"),
-            mock.patch.object(review_pr, "run_reviewer", return_value=review) as reviewer,
+            mock.patch.object(
+                review_pr, "run_reviewer", return_value=review, side_effect=model
+            ) as reviewer,
             mock.patch("sys.argv", argv),
             mock.patch("builtins.print"),
         ):
@@ -410,6 +412,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual((run["status"], run["tier"], run["verdict"]), ("ok", "P", "Ready to merge"))
         self.assertIn("- Merge pull request #5", (run_dir / "prompt.md").read_text())
         self.reviewer.assert_called_once()
+
+    def test_model_time_is_recorded_apart_from_run_time(self):
+        with mock.patch("time.monotonic", side_effect=[100.0, 112.4]):
+            _, run = self.main("--promote")
+        self.assertEqual(run["model_seconds"], 12)
+
+    def test_model_time_is_recorded_when_the_model_fails(self):
+        with mock.patch("time.monotonic", side_effect=[100.0, 105.0]), self.assertRaises(RuntimeError):
+            self.main("--promote", model=RuntimeError("codex crashed"))
+        (run_dir,) = self.runs.iterdir()
+        run = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual((run["status"], run["model_seconds"]), ("failed", 5))
 
     def test_promote_rejected_before_review_when_base_moved(self):
         self.git(self.origin, "checkout", "-q", "main")

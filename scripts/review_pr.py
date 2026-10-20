@@ -735,7 +735,12 @@ def finish(
         return
 
     schema = recheck_schema() if earlier else json.loads(SCHEMA.read_text())
-    review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    started = time.monotonic()
+    try:
+        review = run_reviewer(args.reviewer, args.checkout, prompt, out, schema)
+    finally:
+        # The model alone, apart from git, prompt, and checks: the quota-bearing part.
+        run["model_seconds"] = round(time.monotonic() - started)
     hunks = head_hunks((out / "diff.patch").read_text())
     if earlier:
         run["earlier"] = assess_follow_up(review, earlier[1], changed, hunks)
