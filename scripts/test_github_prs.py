@@ -1,3 +1,4 @@
+import itertools
 import json
 import subprocess
 import unittest
@@ -98,9 +99,22 @@ class RestOfTest(unittest.TestCase):
         args = g.call_args.args[0]
         self.assertIn("--paginate", args)
         self.assertIn("number=7", args)
+        self.assertIn("name=p", args)
         self.assertIn(
             "commits(first: 100, after: $endCursor)", next(a for a in args if a.startswith("query="))
         )
+
+
+class GraphqlTest(unittest.TestCase):
+    def test_repo_names_stay_strings_and_number_is_typed(self):
+        with mock.patch.object(github_prs, "gh", return_value=[]) as g:
+            github_prs.graphql("q", "123/true", 7)
+        args = g.call_args.args[0]
+        pairs = list(itertools.pairwise(args))
+        self.assertIn(("-f", "owner=123"), pairs)
+        self.assertIn(("-f", "name=true"), pairs)
+        self.assertIn(("-F", "number=7"), pairs)
+        self.assertNotIn(("-F", "owner=123"), pairs)
 
 
 class PrsTest(unittest.TestCase):

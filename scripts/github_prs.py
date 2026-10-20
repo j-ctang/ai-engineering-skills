@@ -52,12 +52,12 @@ def gh(args: list[str], tries: int = 5, wait: float = 10) -> Any:
     sys.exit(f"gh {' '.join(args[:2])} failed {tries} times")
 
 
-def graphql(query: str, repo: str, *variables: str) -> Any:
+def graphql(query: str, repo: str, number: int | None = None) -> Any:
+    # -f sends a string as is; -F would turn a repo named "123" or "true" into a number or bool.
     owner, name = repo.split("/")
     args = ["api", "graphql", "--paginate", "--slurp", "-f", f"query={query}"]
-    for v in (f"owner={owner}", f"name={name}", *variables):
-        args += ["-F", v]
-    return gh(args)
+    args += ["-f", f"owner={owner}", "-f", f"name={name}"]
+    return gh(args if number is None else [*args, "-F", f"number={number}"])
 
 
 def rest_of(repo: str, number: int, key: str) -> list[Row]:
@@ -68,7 +68,7 @@ def rest_of(repo: str, number: int, key: str) -> list[Row]:
         f" {key}(first: 100, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }}"
         f" nodes {{ {LISTS[key]} }} }} }} }} }}"
     )
-    pages = graphql(query, repo, f"number={number}")
+    pages = graphql(query, repo, number)
     return [n for page in pages for n in page["data"]["repository"]["pullRequest"][key]["nodes"]]
 
 
