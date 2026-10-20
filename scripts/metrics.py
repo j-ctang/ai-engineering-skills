@@ -224,8 +224,10 @@ def report(rows: list[Row], runs: list[Row], since: date, until: date) -> Row:
         "review_runs": {
             "runs": len(rr),
             "failed": sum(x.get("status") == "failed" for x in rr),
-            # Whole run (git, prompt, model, checks); the model dominates but is not timed alone.
-            "run_seconds": sum(x.get("seconds") or 0 for x in rr),
+            "run_seconds": sum(x.get("seconds") or 0 for x in rr),  # whole run: git, model, checks
+            # The model call alone. Records written before it was timed lack it; they are counted, not guessed.
+            "model_seconds": sum(x["model_seconds"] for x in rr if "model_seconds" in x),
+            "runs_without_model_seconds": sum("model_seconds" not in x for x in rr),
         },
     }
 

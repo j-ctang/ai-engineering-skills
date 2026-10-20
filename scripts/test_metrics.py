@@ -207,7 +207,7 @@ class ReportTest(unittest.TestCase):
 
     def test_counts_only_the_date_range(self):
         runs = [
-            run("2026-10-14T11:00:00+00:00", status="ok", seconds=20),
+            run("2026-10-14T11:00:00+00:00", status="ok", seconds=20, model_seconds=15),
             run("2026-10-15T11:00:00+00:00", status="failed", seconds=5),
             run("2026-10-09T11:00:00+00:00", status="ok", seconds=30),
         ]
@@ -217,7 +217,16 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(rep["unreviewed"], ["o/h#2"])
         self.assertEqual(rep["reverts"], ["o/p#1 by #9"])
         self.assertEqual(rep["revert_rate"], 0.5)
-        self.assertEqual(rep["review_runs"], {"runs": 2, "failed": 1, "run_seconds": 25})
+        self.assertEqual(
+            rep["review_runs"],
+            {
+                "runs": 2,
+                "failed": 1,
+                "run_seconds": 25,
+                "model_seconds": 15,
+                "runs_without_model_seconds": 1,
+            },
+        )
         self.assertEqual(rep["active_days"], 1)
         self.assertIn("first pass: {'ready': 1, 'reviewed': 1, 'rate': 1.0}", metrics.render(rep))
 
